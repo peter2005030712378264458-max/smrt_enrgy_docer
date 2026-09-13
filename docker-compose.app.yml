@@ -1,0 +1,89 @@
+services:
+  analytical:
+    build:
+      context: ./Аналитический сервис/Analytical_service
+      network: host
+      dockerfile_inline: |
+        FROM python:3.11-slim
+
+        WORKDIR /app
+
+        COPY requirements.txt .
+        RUN pip install --no-cache-dir -r requirements.txt
+
+        COPY . .
+
+        EXPOSE 8001
+
+        CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8001"]
+    network_mode: host
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
+    environment:
+      ANALYTICS_INTERNAL_TOKEN: change-me
+      ANALYTICS_POSTGRES_HOST: 127.0.0.1
+      ANALYTICS_POSTGRES_PORT: "15432"
+      ANALYTICS_POSTGRES_DB: student
+      ANALYTICS_POSTGRES_USER: student
+      ANALYTICS_POSTGRES_PASSWORD: st1211@98w
+      ANALYTICS_POSTGRES_CONNECT_TIMEOUT: "5"
+      ANALYTICS_HOURLY_TABLE: student_schema.electricity_sensor_readings_hourly
+      ANALYTICS_TIMEZONE: Europe/Moscow
+      POSTGRES_KEEPALIVES: "1"
+      POSTGRES_KEEPALIVES_IDLE: "30"
+      POSTGRES_KEEPALIVES_INTERVAL: "10"
+      POSTGRES_KEEPALIVES_COUNT: "5"
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: ./Бэк/project_backend
+      network: host
+    network_mode: host
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
+    environment:
+      RUNNING_IN_DOCKER: "1"
+      POSTGRES_HOST: 127.0.0.1
+      POSTGRES_PORT: "15432"
+      POSTGRES_DB: paradigm_db
+      POSTGRES_USER: student
+      POSTGRES_PASSWORD: st1211@98w
+      DJANGO_POSTGRES_DB: student
+      SOURCE_POSTGRES_DB: paradigm_db
+      RUN_DJANGO_MIGRATIONS: "1"
+      RUN_ENERGY_INDEXES: "0"
+      ENERGY_POWER_TABLE: electricity_sensor_readings
+      ENERGY_AGG_POSTGRES_DB: student
+      ENERGY_HOURLY_TABLE: student_schema.electricity_sensor_readings_hourly
+      ENERGY_DAILY_TABLE: student_schema.electricity_sensor_readings_daily
+      ENERGY_DEFAULT_LOOKBACK_HOURS: "24"
+      ANALYTICS_SERVICE_URL: http://127.0.0.1:8001
+      ANALYTICS_SERVICE_TOKEN: change-me
+      ANALYTICS_SERVICE_TIMEOUT_SECONDS: "10"
+      POSTGRES_KEEPALIVES: "1"
+      POSTGRES_KEEPALIVES_IDLE: "30"
+      POSTGRES_KEEPALIVES_INTERVAL: "10"
+      POSTGRES_KEEPALIVES_COUNT: "5"
+    depends_on:
+      - analytical
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./Фронт/smart_energy
+      network: host
+      args:
+        VITE_API_URL: /api
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
+    ports:
+      - "127.0.0.1:8080:80"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - backend
+    restart: unless-stopped

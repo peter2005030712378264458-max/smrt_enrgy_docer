@@ -1,0 +1,6 @@
+fastapi
+uvicorn[standard]
+pydantic-settings
+psycopg[binary,pool]==3.2.9
+pytest
+httpx

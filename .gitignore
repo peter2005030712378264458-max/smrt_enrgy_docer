@@ -1,0 +1,25 @@
+# Python virtual environments and caches
+.venv/
+venv/
+env/
+ENV/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+
+# JavaScript dependencies and generated bundles
+node_modules/
+dist/
+build/
+
+# Local configuration and runtime data
+.env
+.env.*
+!.env.example
+*.sqlite
+*.sqlite3
+*.db
+
+# Operating-system metadata
+.DS_Store

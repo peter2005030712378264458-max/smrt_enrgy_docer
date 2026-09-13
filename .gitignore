@@ -13,13 +13,10 @@ node_modules/
 dist/
 build/
 
-# Local configuration and runtime data
+# Local configuration
 .env
 .env.*
 !.env.example
-*.sqlite
-*.sqlite3
-*.db
 
 # Operating-system metadata
 .DS_Store

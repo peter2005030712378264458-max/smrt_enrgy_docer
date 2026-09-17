@@ -1,21 +1,10 @@
+version: '3.8'
 services:
   analytical:
     build:
-      context: ./Аналитический сервис/Analytical_service
+      context: ./Аналитический сервис/Analytical_service
+      dockerfile: Dockerfile
       network: host
-      dockerfile_inline: |
-        FROM python:3.11-slim
-
-        WORKDIR /app
-
-        COPY requirements.txt .
-        RUN pip install --no-cache-dir -r requirements.txt
-
-        COPY . .
-
-        EXPOSE 8001
-
-        CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8001"]
     network_mode: host
     dns:
       - 8.8.8.8
@@ -35,10 +24,10 @@ services:
       POSTGRES_KEEPALIVES_INTERVAL: "10"
       POSTGRES_KEEPALIVES_COUNT: "5"
     restart: unless-stopped
-
   backend:
     build:
       context: ./Бэк/project_backend
+      dockerfile: Dockerfile
       network: host
     network_mode: host
     dns:
@@ -70,10 +59,10 @@ services:
     depends_on:
       - analytical
     restart: unless-stopped
-
   frontend:
     build:
       context: ./Фронт/smart_energy
+      dockerfile: Dockerfile
       network: host
       args:
         VITE_API_URL: /api
@@ -81,7 +70,9 @@ services:
       - 8.8.8.8
       - 1.1.1.1
     ports:
-      - "127.0.0.1:8080:80"
+      - "0.0.0.0:443:443"
+    volumes:
+      - ./ssl:/etc/nginx/ssl:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:

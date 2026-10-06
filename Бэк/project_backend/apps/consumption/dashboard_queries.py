@@ -784,6 +784,91 @@ def get_top_devices(request, limit=10):
     return rows
 
 
+def get_weekday_heatmap(request, page=1, page_size=8):
+    """Page through the existing meter directory; aggregate only visible meters.
+
+    Bounds are calculated in SQL across the filtered selection so the color scale
+    stays comparable between pages. Missing readings remain null, not zero.
+    """
+    with dashboard_connection(_metadata_db_alias()) as connection:
+        data_names = _matching_data_names(connection, request)
+        directory_where = ""
+        directory_params = []
+        if data_names is not None:
+            directory_where = (
+                f"WHERE data_name IN ({_placeholders(data_names)})" if data_names else "WHERE 1 = 0"
+            )
+            directory_params = data_names
+        directory_sql = f"{_with_metadata(include_power_readings=False)}"
+        count = connection.execute(
+            f"{directory_sql} SELECT COUNT(DISTINCT data_name) AS count FROM devices {directory_where}",
+            directory_params,
+        ).fetchone()["count"]
+        meters = rows_to_dicts(connection.execute(
+            f"""{directory_sql}
+            SELECT DISTINCT data_name, dashboard_label AS label, power_location AS location
+            FROM devices {directory_where}
+            ORDER BY data_name LIMIT %s OFFSET %s
+            """,
+            [*directory_params, page_size, (page - 1) * page_size],
+        ).fetchall())
+
+    result = {
+        "count": count, "page": page, "page_size": page_size,
+        "total_pages": (count + page_size - 1) // page_size,
+        "min_energy_kwh": 0, "max_energy_kwh": 0, "meters": [],
+    }
+    if not meters:
+        return result
+
+    bucket = _timeseries_bucket(request)
+    source_table, granularity, _ = _aggregate_source_for_bucket(bucket)
+    # A weekly chart still uses daily rows here: each weekday must stay separate.
+    date_filter = "timestamp" if granularity == "hour" else "date"
+    weekday_expr = (
+        "EXTRACT(ISODOW FROM a.bucket_start AT TIME ZONE 'Europe/Moscow')::integer"
+        if granularity == "hour" else "EXTRACT(ISODOW FROM a.bucket_start::date)::integer"
+    )
+    energy_expr = _bucket_energy_sql(granularity)
+    where_sql, params = _aggregate_where_sql(data_names, request, date_filter=date_filter)
+    page_where, page_params = _aggregate_where_sql(
+        [meter["data_name"] for meter in meters], request, date_filter=date_filter,
+    )
+    with dashboard_connection(_analytics_db_alias()) as connection:
+        bounds = connection.execute(
+            f"""WITH weekday_energy AS (
+                SELECT a.sensor_name, {weekday_expr} AS weekday, {energy_expr} AS energy_kwh
+                FROM {source_table} a {where_sql}
+                GROUP BY a.sensor_name, {weekday_expr}
+            )
+            SELECT LEAST(0, MIN(energy_kwh)) AS min_energy_kwh,
+                   GREATEST(0, MAX(energy_kwh)) AS max_energy_kwh
+            FROM weekday_energy
+            """, params,
+        ).fetchone()
+        values = rows_to_dicts(connection.execute(
+            f"""SELECT a.sensor_name::text AS data_name, {weekday_expr} AS weekday,
+                       {energy_expr} AS energy_kwh
+                FROM {source_table} a {page_where}
+                GROUP BY a.sensor_name, {weekday_expr}
+                ORDER BY a.sensor_name, weekday
+            """, page_params,
+        ).fetchall())
+
+    by_meter = {}
+    for value in values:
+        by_meter.setdefault(value["data_name"], {})[value["weekday"]] = value["energy_kwh"]
+    result.update(bounds)
+    result["meters"] = [
+        {**meter, "days": [
+            {"weekday": weekday, "energy_kwh": by_meter.get(meter["data_name"], {}).get(weekday)}
+            for weekday in range(1, 8)
+        ]}
+        for meter in meters
+    ]
+    return result
+
+
 def get_device_detail(request, data_name):
     with dashboard_connection(_metadata_db_alias()) as connection:
         device = row_to_dict(

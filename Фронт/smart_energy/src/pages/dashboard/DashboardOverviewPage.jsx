@@ -1,6 +1,7 @@
 import { useOutletContext } from 'react-router'
 import PowerTrendChart from '../../components/charts/PowerTrendChart.jsx'
 import RoomConsumptionChart from '../../components/charts/RoomConsumptionChart.jsx'
+import WeekdayConsumptionHeatmap from '../../components/charts/WeekdayConsumptionHeatmap.jsx'
 import {
   PERIOD_OPTIONS,
   formatDateLabel,
@@ -124,6 +125,8 @@ export default function DashboardOverviewPage() {
           </div>
         </article>
       </section>
+
+      <WeekdayConsumptionHeatmap key={JSON.stringify(queryParams)} params={queryParams} ready={Boolean(filters && (period === 'all' || selectedDate))} />
 
       <section className="energy-content-grid energy-content-grid--secondary">
         <article className="energy-panel">

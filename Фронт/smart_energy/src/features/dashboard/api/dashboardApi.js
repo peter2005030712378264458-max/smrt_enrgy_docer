@@ -78,6 +78,10 @@ export function getRoomLoads(params) {
   return getJson(`/room-loads/${buildQuery(params)}`)
 }
 
+export function getWeekdayHeatmap(params) {
+  return getJson(`/weekday-heatmap/${buildQuery(params)}`)
+}
+
 export function getDeviceDetail(dataName, params) {
   return getJson(`/devices/${encodeURIComponent(dataName)}/${buildQuery(params)}`)
 }

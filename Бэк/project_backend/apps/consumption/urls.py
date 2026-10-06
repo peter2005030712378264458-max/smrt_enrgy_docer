@@ -8,6 +8,7 @@ from .dashboard_views import (
     DashboardSummaryView,
     DashboardTimeseriesView,
     DashboardTopDevicesView,
+    DashboardWeekdayHeatmapView,
 )
 
 
@@ -18,5 +19,6 @@ urlpatterns = [
     path("dashboard/timeseries/", DashboardTimeseriesView.as_view(), name="dashboard-timeseries"),
     path("dashboard/top-devices/", DashboardTopDevicesView.as_view(), name="dashboard-top-devices"),
     path("dashboard/room-loads/", DashboardRoomLoadsView.as_view(), name="dashboard-room-loads"),
+    path("dashboard/weekday-heatmap/", DashboardWeekdayHeatmapView.as_view(), name="dashboard-weekday-heatmap"),
     path("dashboard/devices/<str:data_name>/", DashboardDeviceDetailView.as_view(), name="dashboard-device-detail"),
 ]

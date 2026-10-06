@@ -60,9 +60,7 @@ services:
     image: smart-energy-vm-frontend
     build:
       context: ./Фронт/smart_energy
-      network: host
       args:
-        VITE_API_URL: /api
         NGINX_CONFIG: nginx.vm.conf
     network_mode: host
     environment:

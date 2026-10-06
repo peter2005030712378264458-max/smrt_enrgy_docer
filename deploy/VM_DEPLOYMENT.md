@@ -76,16 +76,35 @@ docker-compose up -d --build
 
 Не добавляйте `-v` при обычной остановке: это удалит том с ключом сессий.
 
+## Готовая сборка frontend
+
+Frontend уже собран с адресом API `/api` и упакован в
+`Фронт/smart_energy/frontend-dist.tar.gz`. Передавайте этот архив вместе с
+Dockerfile и конфигурацией Nginx; включайте его в коммит при обновлении интерфейса.
+Dockerfile распаковывает архив в Nginx. На ВМ установка npm-зависимостей и сборка
+React не выполняются. Запуск остаётся `docker-compose up -d --build`.
+
+После изменения исходников пересоберите архив на компьютере с Node.js 22
+(из корня проекта; пример для Linux/macOS):
+
+```bash
+cd 'Фронт/smart_energy'
+npm ci
+npm run lint
+VITE_API_URL=/api npm run build
+tar -czf frontend-dist.tar.gz -C dist .
+```
+
 ## Ошибка DNS при сборке
 
 `Temporary failure in name resolution` при `pip install` означает, что сборочный
-контейнер не может разрешить адрес сервера пакетов. Для всех трёх сервисов задано
-`build.network: host`: команды `pip install` и `npm ci` используют сеть Linux-ВМ.
+контейнер не может разрешить адрес сервера пакетов. Для обоих Python-сервисов задано
+`build.network: host`: команда `pip install` использует сеть Linux-ВМ.
 
 Проверьте разрешение адресов на самой ВМ:
 
 ```bash
-getent hosts pypi.org files.pythonhosted.org registry.npmjs.org
+getent hosts pypi.org files.pythonhosted.org
 ```
 
 Если адреса разрешаются, повторите `docker-compose up -d --build` с актуальным

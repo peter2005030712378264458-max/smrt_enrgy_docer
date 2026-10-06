@@ -75,3 +75,19 @@ docker-compose up -d --build
 ```
 
 Не добавляйте `-v` при обычной остановке: это удалит том с ключом сессий.
+
+## Ошибка DNS при сборке
+
+`Temporary failure in name resolution` при `pip install` означает, что сборочный
+контейнер не может разрешить адрес сервера пакетов. Для всех трёх сервисов задано
+`build.network: host`: команды `pip install` и `npm ci` используют сеть Linux-ВМ.
+
+Проверьте разрешение адресов на самой ВМ:
+
+```bash
+getent hosts pypi.org files.pythonhosted.org registry.npmjs.org
+```
+
+Если адреса разрешаются, повторите `docker-compose up -d --build` с актуальным
+`docker-compose.yml`. Если адреса не разрешаются и на ВМ, сначала требуется
+исправить DNS или доступ к внутреннему зеркалу пакетов на самой ВМ.

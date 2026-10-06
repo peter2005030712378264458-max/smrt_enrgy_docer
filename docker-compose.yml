@@ -17,6 +17,7 @@ services:
     image: smart-energy-vm-analytical
     build:
       context: ./Аналитический сервис/Analytical_service
+      network: host
     network_mode: host
     command: ["uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "8001"]
     env_file: *service-env-files
@@ -30,6 +31,7 @@ services:
     image: smart-energy-vm-backend
     build:
       context: ./Бэк/project_backend
+      network: host
     network_mode: host
     env_file: *service-env-files
     environment:
@@ -58,6 +60,7 @@ services:
     image: smart-energy-vm-frontend
     build:
       context: ./Фронт/smart_energy
+      network: host
       args:
         VITE_API_URL: /api
         NGINX_CONFIG: nginx.vm.conf

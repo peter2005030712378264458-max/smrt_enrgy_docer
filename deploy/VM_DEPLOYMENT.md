@@ -15,6 +15,31 @@ Nginx в контейнере frontend принимает HTTPS на внешн�
 существующий сертификат ВМ. Apache не участвует в обработке запросов приложения.
 Для URL `https://193.232.208.42` без номера порта используется 443.
 
+## 0. Docker Compose
+
+Проверьте, что Compose доступен тому пользователю, который запускает приложение:
+
+```bash
+docker compose version
+```
+
+Если команда отсутствует, установите плагин по
+[инструкции Docker](https://docs.docker.com/compose/install/linux/).
+Для установки в каталог текущего пользователя без выбора пакетного менеджера:
+
+```bash
+compose_plugin_dir="${DOCKER_CONFIG:-$HOME/.docker}/cli-plugins"
+mkdir -p "$compose_plugin_dir"
+curl -fL "https://github.com/docker/compose/releases/download/v5.6.0/docker-compose-linux-$(uname -m)" -o "$compose_plugin_dir/docker-compose"
+chmod +x "$compose_plugin_dir/docker-compose"
+docker compose version
+```
+
+Скрипт также поддерживает установленный `docker-compose` версии 2 и новее.
+Compose 1 не подходит для этой конфигурации. Ошибка `unknown flag: --project-directory`
+с общей справкой Docker означает, что команда `docker compose` не распознана;
+сначала проверьте установку плагина.
+
 ## 1. Настройки приложения
 
 Скрипт запуска использует заполненные файлы сервисов: `.env.example`, затем `.env`

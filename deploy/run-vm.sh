@@ -3,6 +3,30 @@ set -eu
 
 cd "$(dirname "$0")/.."
 
+if docker compose version >/dev/null 2>&1; then
+    compose_mode=plugin
+elif command -v docker-compose >/dev/null 2>&1; then
+    compose_version=$(docker-compose version --short 2>/dev/null || true)
+    case "$compose_version" in
+        1.*|v1.*|'')
+            printf '%s\n' 'Docker Compose 2 or newer is required. Install the Compose plugin; see deploy/VM_DEPLOYMENT.md.' >&2
+            exit 1
+            ;;
+    esac
+    compose_mode=standalone
+else
+    printf '%s\n' 'Docker Compose is unavailable. Install the Compose plugin; see deploy/VM_DEPLOYMENT.md.' >&2
+    exit 1
+fi
+
+run_compose() {
+    if [ "$compose_mode" = plugin ]; then
+        docker compose "$@"
+    else
+        docker-compose "$@"
+    fi
+}
+
 write_existing_env_files() {
     for path in \
         './Аналитический сервис/Analytical_service/.env' \
@@ -38,4 +62,4 @@ if [ -f './.env.vm' ]; then
 fi
 
 # Keep the repository file first so relative paths and project naming stay stable.
-docker compose --project-directory "$PWD" -f docker-compose.vm.yml "$@"
+run_compose --project-directory "$PWD" -f docker-compose.vm.yml "$@"

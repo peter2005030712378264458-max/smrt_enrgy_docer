@@ -1,8 +1,8 @@
-name: smart-energy-vm
+version: "3.8"
 
 x-service-env-files: &service-env-files
-  - ./Аналитический сервис/Analytical_service/.env.example
-  - ./Бэк/project_backend/.env.example
+  - ${ANALYTICS_ENV_FILE:-./Аналитический сервис/Analytical_service/.env.example}
+  - ${BACKEND_ENV_FILE:-./Бэк/project_backend/.env.example}
 
 x-database-environment: &database-environment
   POSTGRES_HOST: ${POSTGRES_HOST:-127.0.0.1}
@@ -14,6 +14,7 @@ x-database-environment: &database-environment
 
 services:
   analytical:
+    image: smart-energy-vm-analytical
     build:
       context: ./Аналитический сервис/Analytical_service
     network_mode: host
@@ -26,6 +27,7 @@ services:
     restart: unless-stopped
 
   backend:
+    image: smart-energy-vm-backend
     build:
       context: ./Бэк/project_backend
     network_mode: host
@@ -53,6 +55,7 @@ services:
     restart: unless-stopped
 
   frontend:
+    image: smart-energy-vm-frontend
     build:
       context: ./Фронт/smart_energy
       args:
@@ -62,21 +65,12 @@ services:
     environment:
       API_PROXY_TARGET: http://127.0.0.1:5000
     volumes:
-      - type: bind
-        source: ${TLS_CERTIFICATE_PATH:-./ssl/nginx.crt}
-        target: /etc/nginx/ssl/nginx.crt
-        read_only: true
-        bind:
-          create_host_path: false
-      - type: bind
-        source: ${TLS_KEY_PATH:-./ssl/nginx.key}
-        target: /etc/nginx/ssl/nginx.key
-        read_only: true
-        bind:
-          create_host_path: false
+      - ${TLS_CERTIFICATE_PATH:-./ssl/nginx.crt}:/etc/nginx/ssl/nginx.crt:ro
+      - ${TLS_KEY_PATH:-./ssl/nginx.key}:/etc/nginx/ssl/nginx.key:ro
     depends_on:
       - backend
     restart: unless-stopped
 
 volumes:
   django-secret:
+    name: smart-energy-vm_django-secret

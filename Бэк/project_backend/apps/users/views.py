@@ -1,4 +1,4 @@
-from django.shortcuts import render
+from django.conf import settings
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated
@@ -44,29 +44,14 @@ class CookieTokenObtainPairView(TokenObtainPairView):
             key="refresh_token",
             value=refresh,
             httponly=True,
-            secure=False,
+            secure=settings.AUTH_REFRESH_COOKIE_SECURE,
+            max_age=int(settings.SIMPLE_JWT["REFRESH_TOKEN_LIFETIME"].total_seconds()),
             samesite="Lax",   
             path="/"  
         )
 
         return new_response
     
-class CookieTokenRefreshView(TokenRefreshView):
-    def post(self, request, *args, **kwargs):
-        refresh = request.COOKIES.get("refresh_token")
-
-        if not refresh:
-            return Response({"error": "No refresh token"}, status=401) # скорей всего удалить 
-
-        print(refresh)
-        print(request.data["refresh"])
-        
-        data = request.data.copy()   
-        data["refresh"] = refresh
-        
-        serializer = self.get_serializer(data=data)
-        serializer.is_valid(raise_exception=True)
-
 class CookieTokenRefreshView(TokenRefreshView):
     def post(self, request, *args, **kwargs):
         refresh = request.COOKIES.get("refresh_token")

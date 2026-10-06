@@ -8,3 +8,4 @@ tzdata==2025.3
 django-cors-headers==4.4.0
 psycopg[binary]==3.2.9
 httpx
+gunicorn

@@ -1,0 +1,82 @@
+name: smart-energy-vm
+
+x-service-env-files: &service-env-files
+  - ./Аналитический сервис/Analytical_service/.env.example
+  - ./Бэк/project_backend/.env.example
+
+x-database-environment: &database-environment
+  POSTGRES_HOST: ${POSTGRES_HOST:-127.0.0.1}
+  POSTGRES_PORT: ${POSTGRES_PORT:-15432}
+  POSTGRES_KEEPALIVES: "1"
+  POSTGRES_KEEPALIVES_IDLE: "30"
+  POSTGRES_KEEPALIVES_INTERVAL: "10"
+  POSTGRES_KEEPALIVES_COUNT: "5"
+
+services:
+  analytical:
+    build:
+      context: ./Аналитический сервис/Analytical_service
+    network_mode: host
+    command: ["uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "8001"]
+    env_file: *service-env-files
+    environment:
+      <<: *database-environment
+      ANALYTICS_POSTGRES_HOST: ${POSTGRES_HOST:-127.0.0.1}
+      ANALYTICS_POSTGRES_PORT: ${POSTGRES_PORT:-15432}
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: ./Бэк/project_backend
+    network_mode: host
+    env_file: *service-env-files
+    environment:
+      <<: *database-environment
+      RUNNING_IN_DOCKER: "1"
+      DJANGO_USE_GUNICORN: "1"
+      DJANGO_DEBUG: "0"
+      DJANGO_SECRET_KEY_FILE: /run/smart-energy/django_secret_key
+      DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS:-193.232.208.42}
+      DJANGO_CSRF_TRUSTED_ORIGINS: ${DJANGO_CSRF_TRUSTED_ORIGINS:-https://193.232.208.42}
+      DJANGO_TRUST_PROXY_HEADERS: "1"
+      DJANGO_REFRESH_COOKIE_SECURE: "1"
+      RUN_DJANGO_MIGRATIONS: "1"
+      RUN_ENERGY_INDEXES: "0"
+      ANALYTICS_SERVICE_URL: http://127.0.0.1:8001
+      GUNICORN_WORKERS: ${GUNICORN_WORKERS:-2}
+      GUNICORN_TIMEOUT: ${GUNICORN_TIMEOUT:-60}
+      GUNICORN_BIND: 127.0.0.1:5000
+    volumes:
+      - django-secret:/run/smart-energy
+    depends_on:
+      - analytical
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./Фронт/smart_energy
+      args:
+        VITE_API_URL: /api
+        NGINX_CONFIG: nginx.vm.conf
+    network_mode: host
+    environment:
+      API_PROXY_TARGET: http://127.0.0.1:5000
+    volumes:
+      - type: bind
+        source: ${TLS_CERTIFICATE_PATH:-./ssl/nginx.crt}
+        target: /etc/nginx/ssl/nginx.crt
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${TLS_KEY_PATH:-./ssl/nginx.key}
+        target: /etc/nginx/ssl/nginx.key
+        read_only: true
+        bind:
+          create_host_path: false
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  django-secret:

@@ -45,8 +45,8 @@ function AuthPage() {
   const location = useLocation()
   const navigate = useNavigate()
   const searchParams = new URLSearchParams(location.search)
-  const showDashboardPreview =
-    searchParams.get('dashboard') === '1' || searchParams.get('preview') === '1'
+  const showDashboardPreview = import.meta.env.DEV &&
+    (searchParams.get('dashboard') === '1' || searchParams.get('preview') === '1')
   const [mode, setMode] = useState(location.pathname === ROUTES.register ? 'register' : 'login')
   const [loginForm, setLoginForm] = useState(initialLogin)
   const [registerForm, setRegisterForm] = useState(initialRegister)
@@ -57,6 +57,7 @@ function AuthPage() {
   const [status, setStatus] = useState('Проверяем сохраненную сессию...')
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(true)
+  const [sessionChecked, setSessionChecked] = useState(false)
 
   async function handleLogout() {
     try {
@@ -96,6 +97,7 @@ function AuthPage() {
       } finally {
         if (active) {
           setBusy(false)
+          setSessionChecked(true)
         }
       }
     }
@@ -254,6 +256,16 @@ function AuthPage() {
   }
 
   const isAuthenticated = currentUser !== null
+
+  if (!sessionChecked) {
+    return (
+      <main className="auth-shell" aria-busy="true">
+        <section className="auth-card" role="status">
+          <p>Проверяем сохраненную сессию...</p>
+        </section>
+      </main>
+    )
+  }
 
   if (showDashboardPreview && !DASHBOARD_ROUTES[location.pathname]) {
     return <Navigate to={`${ROUTES.dashboard}?preview=1`} replace />

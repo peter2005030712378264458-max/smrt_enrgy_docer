@@ -14,6 +14,8 @@ import os
 from pathlib import Path
 from datetime import timedelta
 
+from django.core.exceptions import ImproperlyConfigured
+
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -42,6 +44,14 @@ def _env(name: str, default: str, *fallback_names: str) -> str:
     return default
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    return _env(name, str(default)).lower() in {"1", "true", "yes", "on"}
+
+
+def _env_list(name: str, default: str = "") -> list[str]:
+    return [value.strip() for value in _env(name, default).split(",") if value.strip()]
+
+
 _load_env_file(BASE_DIR / ".env")
 _load_env_file(BASE_DIR / ".env.local")
 
@@ -50,12 +60,26 @@ _load_env_file(BASE_DIR / ".env.local")
 # See https://docs.djangoproject.com/en/6.0/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = 'django-insecure-l@ng!i62=7om+pqpmf!z5ysp(9a61d-pgwj!81zk&8_b_8y*6x'
+configured_secret_key = os.getenv("DJANGO_SECRET_KEY", "")
+secret_key_file = os.getenv("DJANGO_SECRET_KEY_FILE")
+if not configured_secret_key and secret_key_file and Path(secret_key_file).is_file():
+    configured_secret_key = Path(secret_key_file).read_text(encoding="utf-8").strip()
+SECRET_KEY = configured_secret_key or 'django-insecure-l@ng!i62=7om+pqpmf!z5ysp(9a61d-pgwj!81zk&8_b_8y*6x'
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DEBUG = _env_bool("DJANGO_DEBUG", True)
 
-ALLOWED_HOSTS = ["*"]
+if not DEBUG and not configured_secret_key:
+    raise ImproperlyConfigured("Configure DJANGO_SECRET_KEY or initialize DJANGO_SECRET_KEY_FILE")
+
+ALLOWED_HOSTS = _env_list("DJANGO_ALLOWED_HOSTS", "*")
+CSRF_TRUSTED_ORIGINS = _env_list("DJANGO_CSRF_TRUSTED_ORIGINS")
+SESSION_COOKIE_SECURE = _env_bool("DJANGO_SESSION_COOKIE_SECURE", not DEBUG)
+CSRF_COOKIE_SECURE = _env_bool("DJANGO_CSRF_COOKIE_SECURE", not DEBUG)
+AUTH_REFRESH_COOKIE_SECURE = _env_bool("DJANGO_REFRESH_COOKIE_SECURE", not DEBUG)
+
+if _env_bool("DJANGO_TRUST_PROXY_HEADERS", False):
+    SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 
 
 # Application definition
@@ -85,7 +109,8 @@ MIDDLEWARE = [
     'corsheaders.middleware.CorsMiddleware',
 ]
 
-CORS_ALLOW_ALL_ORIGINS = True
+CORS_ALLOW_ALL_ORIGINS = _env_bool("DJANGO_CORS_ALLOW_ALL_ORIGINS", DEBUG)
+CORS_ALLOWED_ORIGINS = _env_list("DJANGO_CORS_ALLOWED_ORIGINS")
 
 ROOT_URLCONF = 'config.urls'
 
@@ -171,7 +196,7 @@ ENERGY_DEFAULT_LOOKBACK_HOURS = int(os.getenv("ENERGY_DEFAULT_LOOKBACK_HOURS", "
 
 ANALYTICS_SERVICE_URL = os.getenv("ANALYTICS_SERVICE_URL", "http://127.0.0.1:8001")
 ANALYTICS_SERVICE_TIMEOUT_SECONDS = float(os.getenv("ANALYTICS_SERVICE_TIMEOUT_SECONDS", "10"))
-ANALYTICS_SERVICE_TOKEN = os.getenv("ANALYTICS_SERVICE_TOKEN", "")
+ANALYTICS_SERVICE_TOKEN = _env("ANALYTICS_SERVICE_TOKEN", "", "ANALYTICS_INTERNAL_TOKEN")
 
 
 # Password validation

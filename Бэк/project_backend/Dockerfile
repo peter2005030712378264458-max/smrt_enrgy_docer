@@ -11,4 +11,4 @@ COPY . .
 
 EXPOSE 5000
 
-CMD ["sh", "-c", "echo \"Django PostgreSQL: ${POSTGRES_USER}@${POSTGRES_HOST}:${POSTGRES_PORT}/${DJANGO_POSTGRES_DB:-student}\" && python wait_for_db.py && if [ \"${RUN_DJANGO_MIGRATIONS:-0}\" = \"1\" ]; then python manage.py migrate --noinput; fi && if [ \"${RUN_ENERGY_INDEXES:-0}\" = \"1\" ]; then python manage.py ensure_energy_indexes; fi && python manage.py runserver 0.0.0.0:5000"]
+CMD ["sh", "/app/project_backend/start_server.sh"]

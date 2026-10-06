@@ -20,6 +20,8 @@ build/
 *.sqlite
 *.sqlite3
 *.db
+ssl/*.crt
+ssl/*.key
 
 # Operating-system metadata
 .DS_Store

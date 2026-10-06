@@ -5,7 +5,7 @@ x-service-env-files: &service-env-files
   - ${BACKEND_ENV_FILE:-./Бэк/project_backend/.env.example}
 
 x-database-environment: &database-environment
-  POSTGRES_HOST: ${POSTGRES_HOST:-127.0.0.1}
+  POSTGRES_HOST: ${POSTGRES_HOST:-host.docker.internal}
   POSTGRES_PORT: ${POSTGRES_PORT:-15432}
   POSTGRES_KEEPALIVES: "1"
   POSTGRES_KEEPALIVES_IDLE: "30"
@@ -14,25 +14,29 @@ x-database-environment: &database-environment
 
 services:
   analytical:
-    image: smart-energy-vm-analytical
+    image: smart-energy-local-analytical
     build:
       context: ./Аналитический сервис/Analytical_service
-      network: host
-    network_mode: host
-    command: ["uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "8001"]
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8001"]
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "127.0.0.1:${ANALYTICS_PORT:-8001}:8001"
     env_file: *service-env-files
     environment:
       <<: *database-environment
-      ANALYTICS_POSTGRES_HOST: ${POSTGRES_HOST:-127.0.0.1}
+      ANALYTICS_POSTGRES_HOST: ${POSTGRES_HOST:-host.docker.internal}
       ANALYTICS_POSTGRES_PORT: ${POSTGRES_PORT:-15432}
     restart: unless-stopped
 
   backend:
-    image: smart-energy-vm-backend
+    image: smart-energy-local-backend
     build:
       context: ./Бэк/project_backend
-      network: host
-    network_mode: host
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "127.0.0.1:${BACKEND_PORT:-5000}:5000"
     env_file: *service-env-files
     environment:
       <<: *database-environment
@@ -40,16 +44,16 @@ services:
       DJANGO_USE_GUNICORN: "1"
       DJANGO_DEBUG: "0"
       DJANGO_SECRET_KEY_FILE: /run/smart-energy/django_secret_key
-      DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS:-193.232.208.42}
-      DJANGO_CSRF_TRUSTED_ORIGINS: ${DJANGO_CSRF_TRUSTED_ORIGINS:-https://193.232.208.42}
+      DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS:-localhost,127.0.0.1}
+      DJANGO_CSRF_TRUSTED_ORIGINS: ${DJANGO_CSRF_TRUSTED_ORIGINS:-https://localhost,https://127.0.0.1},https://localhost:${HTTPS_PORT:-443},https://127.0.0.1:${HTTPS_PORT:-443}
       DJANGO_TRUST_PROXY_HEADERS: "1"
       DJANGO_REFRESH_COOKIE_SECURE: "1"
       RUN_DJANGO_MIGRATIONS: "1"
       RUN_ENERGY_INDEXES: "0"
-      ANALYTICS_SERVICE_URL: http://127.0.0.1:8001
+      ANALYTICS_SERVICE_URL: http://analytical:8001
       GUNICORN_WORKERS: ${GUNICORN_WORKERS:-2}
       GUNICORN_TIMEOUT: ${GUNICORN_TIMEOUT:-60}
-      GUNICORN_BIND: 127.0.0.1:5000
+      GUNICORN_BIND: 0.0.0.0:5000
     volumes:
       - django-secret:/run/smart-energy
     depends_on:
@@ -57,14 +61,15 @@ services:
     restart: unless-stopped
 
   frontend:
-    image: smart-energy-vm-frontend
+    image: smart-energy-local-frontend
     build:
       context: ./Фронт/smart_energy
       args:
-        NGINX_CONFIG: nginx.vm.conf
-    network_mode: host
+        NGINX_CONFIG: nginx.conf
+    ports:
+      - "127.0.0.1:${HTTPS_PORT:-443}:443"
     environment:
-      API_PROXY_TARGET: http://127.0.0.1:5000
+      API_PROXY_TARGET: http://backend:5000
     volumes:
       - ${TLS_CERTIFICATE_PATH:-./ssl/nginx.crt}:/etc/nginx/ssl/nginx.crt:ro
       - ${TLS_KEY_PATH:-./ssl/nginx.key}:/etc/nginx/ssl/nginx.key:ro
@@ -74,4 +79,4 @@ services:
 
 volumes:
   django-secret:
-    name: smart-energy-vm_django-secret
+    name: smart-energy-local_django-secret

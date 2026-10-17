@@ -100,6 +100,7 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
+    'whitenoise.middleware.WhiteNoiseMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
@@ -193,6 +194,9 @@ ENERGY_ANALYTICS_DB_ALIAS = os.getenv("ENERGY_ANALYTICS_DB_ALIAS", "analytics")
 ENERGY_HOURLY_TABLE = os.getenv("ENERGY_HOURLY_TABLE", "student_schema.electricity_sensor_readings_hourly")
 ENERGY_DAILY_TABLE = os.getenv("ENERGY_DAILY_TABLE", "student_schema.electricity_sensor_readings_daily")
 ENERGY_DEFAULT_LOOKBACK_HOURS = int(os.getenv("ENERGY_DEFAULT_LOOKBACK_HOURS", "24"))
+ENERGY_USE_STORED_ENERGY = _env_bool('ENERGY_USE_STORED_ENERGY', False)
+ENERGY_ADAPTER_URL = os.getenv('ENERGY_ADAPTER_URL', '')
+ENERGY_ADAPTER_TOKEN = os.getenv('ENERGY_ADAPTER_TOKEN', '')
 
 ANALYTICS_SERVICE_URL = os.getenv("ANALYTICS_SERVICE_URL", "http://127.0.0.1:8001")
 ANALYTICS_SERVICE_TIMEOUT_SECONDS = float(os.getenv("ANALYTICS_SERVICE_TIMEOUT_SECONDS", "10"))
@@ -234,7 +238,8 @@ USE_TZ = True
 # Static files (CSS, JavaScript, Images)
 # https://docs.djangoproject.com/en/6.0/howto/static-files/
 
-STATIC_URL = 'static/'
+STATIC_URL = '/static/'
+STATIC_ROOT = BASE_DIR / 'staticfiles'
 
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': (

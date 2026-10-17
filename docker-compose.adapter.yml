@@ -1,0 +1,22 @@
+services:
+  adapter:
+    image: smart-energy-local-adapter
+    build:
+      context: .
+      dockerfile: adapter/Dockerfile
+    env_file:
+      - ${ADAPTER_ENV_FILE:-./adapter/.env}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    expose:
+      - "8002"
+    restart: unless-stopped
+    stop_grace_period: 150s
+  backend:
+    environment:
+      ENERGY_ADAPTER_URL: http://adapter:8002
+      ENERGY_ADAPTER_TOKEN: ${ENERGY_ADAPTER_TOKEN:?Set the same internal token in root .env and adapter/.env}
+      ENERGY_USE_STORED_ENERGY: ${ENERGY_USE_STORED_ENERGY:-0}
+  analytical:
+    environment:
+      ENERGY_USE_STORED_ENERGY: ${ENERGY_USE_STORED_ENERGY:-0}

@@ -11,6 +11,7 @@ import {
 import { getPeriodComparison } from '../features/analytics/api/analyticsApi.js'
 import { ROUTES } from '../app/routes.js'
 import ThemeToggle from '../shared/theme/ThemeToggle.jsx'
+import { aggregationRequest } from '../features/aggregation/api/aggregationApi.js'
 import {
   buildAvailableDates,
   buildDashboardParams,
@@ -68,6 +69,14 @@ function DashboardPage() {
   const [analyticsError, setAnalyticsError] = useState('')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const [canManageAggregation, setCanManageAggregation] = useState(false)
+  useEffect(() => {
+    let active = true
+    aggregationRequest('capabilities').then((result) => {
+      if (active) setCanManageAggregation(result.can_manage)
+    }).catch(() => {})
+    return () => { active = false }
+  }, [])
   const userName = getUserName(currentUser)
   const availableDates = useMemo(() => buildAvailableDates(filters?.date_range), [filters?.date_range])
   const queryParams = useMemo(() => buildDashboardParams({ selectedDataName, selectedRoom, selectedConsumerClass, period, dateRange: filters?.date_range, selectedDate }), [filters?.date_range, period, selectedConsumerClass, selectedDataName, selectedDate, selectedRoom])
@@ -196,6 +205,7 @@ function DashboardPage() {
         <aside className="energy-sidebar">
           <div className="energy-brand"><div className="energy-brand__mark" /><div><div className="energy-brand__title">Smart Energy Consumption</div><div className="energy-brand__subtitle">Dashboard</div></div></div>
           <nav className="energy-nav" aria-label="Навигация">
+            {canManageAggregation && <NavLink className="energy-nav__item" to={ROUTES.aggregation}>Источники и агрегации</NavLink>}
             {NAV_ITEMS.map((item) => <NavLink className={({ isActive }) => isActive ? 'energy-nav__item active' : 'energy-nav__item'} to={{ pathname: item.path, search: preview ? '?preview=1' : '' }} key={item.id}><span className="energy-nav__icon"><SidebarIcon id={item.id} /></span><span>{item.label}</span></NavLink>)}
           </nav>
           <div className="energy-sidebar__footer">

@@ -1,0 +1,29 @@
+{
+  "name": "Paradigm: измерения мощности, 5 секунд",
+  "connection": "paradigm",
+  "source_table": "public.electricity_sensor_readings",
+  "timezone": "Europe/Moscow",
+  "source_timezone": "Europe/Moscow",
+  "sample_seconds": 5,
+  "confirmed": true,
+  "columns": {
+    "ts": "ts", "sensor_name": "sensor_name", "pt": "pt",
+    "p1": "p1", "p2": "p2", "p3": "p3",
+    "qt": "qt", "q1": "q1", "q2": "q2", "q3": "q3",
+    "st": "st", "s1": "s1", "s2": "s2", "s3": "s3",
+    "i1": "i1", "i2": "i2", "i3": "i3",
+    "u1": "u1", "u2": "u2", "u3": "u3", "frequency": "frequency", "t": "t"
+  },
+  "scales": {},
+  "sensor_map": {},
+  "directory_connection": "paradigm",
+  "directory_table": "public.sensor_directory",
+  "directory_column": "sensor_name",
+  "quality": {
+    "min_coverage": 0.9,
+    "max_duplicate_fraction": 0.001,
+    "interval_tolerance": 0.2,
+    "min_interval_match": 0.9,
+    "min_existing_points_ratio": 0.8
+  }
+}

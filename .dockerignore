@@ -1,0 +1,20 @@
+*
+!adapter/
+!adapter/**
+!Бэк/
+!Бэк/project_backend/
+!Бэк/project_backend/**
+!Аналитический сервис/
+!Аналитический сервис/Analytical_service/
+!Аналитический сервис/Analytical_service/**
+adapter/.env
+adapter/.env.*
+!adapter/.env.example
+**/__pycache__
+**/*.pyc
+**/*checkpoint*.json
+**/.env
+**/.env.*
+**/*.sqlite3
+**/venv/
+**/.venv/

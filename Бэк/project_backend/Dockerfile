@@ -9,6 +9,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
+# Static collection does not need a database or the runtime session signing key.
+RUN DJANGO_DEBUG=1 python manage.py collectstatic --noinput
+
 EXPOSE 5000
 
 CMD ["sh", "-ec", "\

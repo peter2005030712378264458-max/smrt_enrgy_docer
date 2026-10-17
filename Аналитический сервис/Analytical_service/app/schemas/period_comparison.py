@@ -62,7 +62,7 @@ class PeriodStats(BaseModel):
     mean_kw: float | None
     stddev_kw: float | None
     variance_kw2: float | None
-    total_energy_kwh: float
+    total_energy_kwh: float | None
 
 
 class ZTableLookup(BaseModel):

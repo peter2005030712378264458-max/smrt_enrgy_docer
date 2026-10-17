@@ -2,7 +2,8 @@ import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxi
 
 export default function RoomConsumptionChart({ rooms }) {
   const data = rooms
-    .map((room) => ({ room: String(room.room || 'Без названия'), energy: Number(room.energy_kwh ?? 0) }))
+    .filter((room) => room.energy_kwh !== null && room.energy_kwh !== undefined)
+    .map((room) => ({ room: String(room.room || 'Без названия'), energy: Number(room.energy_kwh) }))
     .filter((room) => Number.isFinite(room.energy))
 
   if (!data.length) return <div className="energy-chart-empty" role="status">Нет агрегированных данных за выбранный период</div>

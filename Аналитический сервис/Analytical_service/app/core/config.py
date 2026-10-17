@@ -30,6 +30,7 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("ANALYTICS_HOURLY_TABLE", "ENERGY_HOURLY_TABLE"),
     )
     timezone_name: str = Field(default="Europe/Moscow", validation_alias="ANALYTICS_TIMEZONE")
+    use_stored_energy: bool = Field(default=False, validation_alias='ENERGY_USE_STORED_ENERGY')
 
     @field_validator("hourly_table")
     @classmethod

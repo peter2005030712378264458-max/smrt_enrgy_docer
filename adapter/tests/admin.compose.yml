@@ -1,0 +1,23 @@
+services:
+  backend-image:
+    profiles: [build]
+    build:
+      context: ../../Бэк/project_backend
+  backend:
+    image: smart-energy-adapter-tests-tests
+    command: ["python", "-m", "adapter.tests.admin_server"]
+  frontend:
+    build:
+      context: ../../Фронт/smart_energy
+    environment:
+      API_PROXY_TARGET: http://backend:5000
+    volumes:
+      - ../../ssl/nginx.crt:/etc/nginx/ssl/nginx.crt:ro
+      - ../../ssl/nginx.key:/etc/nginx/ssl/nginx.key:ro
+    depends_on:
+      - backend
+  checks:
+    image: smart-energy-adapter-tests-tests
+    command: ["python", "-m", "adapter.tests.admin_smoke"]
+    depends_on:
+      - frontend

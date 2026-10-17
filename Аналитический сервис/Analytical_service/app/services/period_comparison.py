@@ -93,7 +93,7 @@ def _row_to_period_stats(key: str, period: PeriodInput, row: dict) -> PeriodStat
         mean_kw=_to_float(row.get("mean_kw")),
         stddev_kw=_to_float(row.get("stddev_kw")),
         variance_kw2=_to_float(row.get("variance_kw2")),
-        total_energy_kwh=float(row.get("total_energy_kwh") or 0),
+        total_energy_kwh=_to_float(row.get('total_energy_kwh')),
     )
 
 
@@ -121,12 +121,15 @@ def fetch_period_stats(
         data_filter = "AND a.sensor_name::text = ANY(%(data_names)s)"
         params["data_names"] = data_names
 
+    energy_sql = ('CASE WHEN COUNT(*)=COUNT(a.energy_kwh) THEN SUM(a.energy_kwh) ELSE NULL END'
+                  if settings.use_stored_energy else 'SUM(a.active_power_w_avg) / 1000.0')
+
     sql = f"""
         WITH hourly AS (
             SELECT
                 a.bucket_start,
                 SUM(a.active_power_w_avg) / 1000.0 AS hourly_total_kw,
-                SUM(a.active_power_w_avg) / 1000.0 AS hourly_energy_kwh,
+                {energy_sql} AS hourly_energy_kwh,
                 SUM(a.points_count) AS source_points
             FROM {settings.hourly_table} a
             WHERE a.bucket_start >= %(from_ts)s::timestamptz
@@ -140,7 +143,7 @@ def fetch_period_stats(
             AVG(hourly_total_kw) AS mean_kw,
             STDDEV_SAMP(hourly_total_kw) AS stddev_kw,
             VAR_SAMP(hourly_total_kw) AS variance_kw2,
-            COALESCE(SUM(hourly_energy_kwh), 0) AS total_energy_kwh,
+            CASE WHEN COUNT(*)=COUNT(hourly_energy_kwh) THEN SUM(hourly_energy_kwh) ELSE NULL END AS total_energy_kwh,
             MIN(bucket_start) AS actual_from,
             MAX(bucket_start) AS actual_to
         FROM hourly

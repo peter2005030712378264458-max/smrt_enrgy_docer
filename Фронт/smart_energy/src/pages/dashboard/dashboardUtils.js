@@ -225,10 +225,10 @@ export function buildPowerStats(points, summary) {
 
 export function buildSummaryFromTimeseries(points, filters, queryParams) {
   const values = points.map((point) => Number(point.value ?? 0)).filter(Number.isFinite)
-  const totalEnergy = points.reduce((total, point) => {
+  const totalEnergy = points.length && points.every((point) => point.energy_kwh !== null && point.energy_kwh !== undefined) ? points.reduce((total, point) => {
     const energy = Number(point.energy_kwh ?? 0)
     return Number.isFinite(energy) ? total + energy : total
-  }, 0)
+  }, 0) : null
 
   if (!values.length) {
     return {
@@ -236,7 +236,7 @@ export function buildSummaryFromTimeseries(points, filters, queryParams) {
       devices_count: 0,
       date_from: queryParams.from ?? filters?.date_range?.date_from ?? null,
       date_to: queryParams.to ?? filters?.date_range?.date_to ?? null,
-      total_energy_kwh: 0,
+      total_energy_kwh: null,
       avg_power_kw: 0,
       max_power_kw: 0,
       avg_voltage_v: 0,

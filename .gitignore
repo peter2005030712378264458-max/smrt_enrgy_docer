@@ -12,6 +12,7 @@ __pycache__/
 node_modules/
 dist/
 build/
+staticfiles/
 
 # Local configuration
 .env
@@ -22,6 +23,8 @@ build/
 *.db
 ssl/*.crt
 ssl/*.key
+energy_aggregation/
+adapter/state/
 
 # Operating-system metadata
 .DS_Store

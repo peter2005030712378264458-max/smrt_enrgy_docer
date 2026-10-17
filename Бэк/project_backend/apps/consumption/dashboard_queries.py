@@ -429,9 +429,21 @@ def _summed_metric_sql(column: str, alias: str = "a") -> str:
 
 
 def _bucket_energy_sql(granularity: str, alias: str = "a") -> str:
+    if settings.ENERGY_USE_STORED_ENERGY:
+        return _stored_energy_sql(alias)
     if granularity in {"day", "week"}:
         return f"SUM({alias}.active_power_w_avg * 24.0) / 1000.0"
     return f"SUM({alias}.active_power_w_avg) / 1000.0"
+
+
+def _stored_energy_sql(alias):
+    # SUM alone would silently omit missing energy and report a partial total.
+    return (f'CASE WHEN COUNT(*) = COUNT({alias}.energy_kwh) '
+            f'THEN SUM({alias}.energy_kwh) ELSE NULL END')
+
+
+def _hourly_energy_sql(alias='a'):
+    return _bucket_energy_sql('hour', alias)
 
 
 def _aggregate_source_for_bucket(bucket: str, metric: str = "active_power_w_avg") -> tuple[str, str, str]:
@@ -650,7 +662,7 @@ def get_summary(request):
                 bucketed AS (
                     SELECT bucket_start,
                            SUM(active_power_w_avg) / 1000.0 AS total_power_kw,
-                           SUM(active_power_w_avg) / 1000.0 AS energy_kwh,
+                           {_hourly_energy_sql('filtered')} AS energy_kwh,
                            SUM(points_count) AS points_count
                     FROM filtered
                     GROUP BY bucket_start
@@ -663,7 +675,7 @@ def get_summary(request):
                        (SELECT COUNT(DISTINCT sensor_name) FROM filtered) AS devices_count,
                        MIN(bucketed.bucket_start) AS date_from,
                        MAX(bucketed.bucket_start) AS date_to,
-                       SUM(bucketed.energy_kwh) AS total_energy_kwh,
+                       {_stored_energy_sql('bucketed')} AS total_energy_kwh,
                        AVG(bucketed.total_power_kw) AS avg_power_kw,
                        MAX(bucketed.total_power_kw) AS max_power_kw,
                        (SELECT {_weighted_avg_sql("voltage_avg_v", "filtered")} FROM filtered) AS avg_voltage_v,
@@ -729,7 +741,7 @@ def get_timeseries(request):
                 )
                 SELECT time_buckets.timestamp,
                        COALESCE(bucketed.value, 0) AS value,
-                       COALESCE(bucketed.energy_kwh, 0) AS energy_kwh,
+                       {('bucketed.energy_kwh' if settings.ENERGY_USE_STORED_ENERGY else 'COALESCE(bucketed.energy_kwh, 0)')} AS energy_kwh,
                        COALESCE(bucketed.points, 0) AS points
                 FROM time_buckets
                 LEFT JOIN bucketed ON bucketed.timestamp = time_buckets.timestamp
@@ -755,7 +767,7 @@ def get_top_devices(request, limit=10):
             connection.execute(
                 f"""
                 SELECT a.sensor_name::text AS data_name,
-                       SUM(a.active_power_w_avg) / 1000.0 AS energy_kwh,
+                       {_hourly_energy_sql()} AS energy_kwh,
                        {_weighted_avg_sql("active_power_w_avg", "a")} / 1000.0 AS avg_power_kw,
                        MAX(a.active_power_w_max) / 1000.0 AS max_power_kw
                 FROM {_hourly_table()} a
@@ -928,7 +940,8 @@ def _aggregate_room_load_rows(rows: list[dict], room: str, is_other: bool = Fals
         "is_other": is_other,
         "devices_count": sum(row.get("devices_count") or 0 for row in rows),
         "points_count": points_count,
-        "energy_kwh": sum(float(row.get("energy_kwh") or 0) for row in rows),
+        "energy_kwh": (sum(float(row['energy_kwh']) for row in rows)
+                       if all(row.get('energy_kwh') is not None for row in rows) else None),
         "avg_power_kw": weighted_power_sum / points_count if points_count else None,
         "max_power_kw": max(max_power_values) if max_power_values else None,
     }
@@ -992,7 +1005,7 @@ def get_room_loads(request, limit=ROOM_LOADS_LIMIT):
                 f"""
                 SELECT a.sensor_name::text AS data_name,
                        SUM(a.points_count) AS points_count,
-                       SUM(a.active_power_w_avg) / 1000.0 AS energy_kwh,
+                       {_hourly_energy_sql()} AS energy_kwh,
                        {_weighted_avg_sql("active_power_w_avg", "a")} / 1000.0 AS avg_power_kw,
                        MAX(a.active_power_w_max) / 1000.0 AS max_power_kw
                 FROM {_hourly_table()} a
@@ -1011,7 +1024,7 @@ def get_room_loads(request, limit=ROOM_LOADS_LIMIT):
         room_count = len(target_rooms)
         points_count = float(row.get("points_count") or 0) / room_count
         avg_power_kw = float(row.get("avg_power_kw") or 0) / room_count
-        energy_kwh = float(row.get("energy_kwh") or 0) / room_count
+        energy_kwh = float(row['energy_kwh']) / room_count if row.get('energy_kwh') is not None else None
         max_power_kw = row.get("max_power_kw")
         max_power_kw = float(max_power_kw) / room_count if max_power_kw is not None else None
 
@@ -1030,7 +1043,10 @@ def get_room_loads(request, limit=ROOM_LOADS_LIMIT):
             )
             room_bucket["devices"].add(row["data_name"])
             room_bucket["points_count"] += points_count
-            room_bucket["energy_kwh"] += energy_kwh
+            if energy_kwh is None or room_bucket['energy_kwh'] is None:
+                room_bucket['energy_kwh'] = None
+            else:
+                room_bucket['energy_kwh'] += energy_kwh
             room_bucket["weighted_power_sum"] += avg_power_kw * points_count
             if max_power_kw is not None:
                 room_bucket["max_power_kw"] = (

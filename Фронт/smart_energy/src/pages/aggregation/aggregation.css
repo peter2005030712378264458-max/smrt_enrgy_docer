@@ -16,6 +16,7 @@
 .aggregation-page .aggregation-check { flex-direction: row; align-items: center; margin: 20px 0; }
 .aggregation-message { padding: 14px 18px; background: #1482a515; border: 1px solid #1482a544; border-radius: 10px; margin: 16px 0; line-height: 1.5; }
 .aggregation-message.error { background: #c3313110; border-color: #c3313155; }
+.aggregation-message.warning { background: #b77a1515; border-color: #b77a1570; }
 .aggregation-table-scroll { overflow-x: auto; }
 .aggregation-page table { border-collapse: collapse; width: 100%; text-align: left; }
 .aggregation-page th, .aggregation-page td { padding: 12px 10px; border-bottom: 1px solid var(--border, #e0e6ed); vertical-align: top; }

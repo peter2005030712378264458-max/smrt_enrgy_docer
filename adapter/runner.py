@@ -136,6 +136,7 @@ def quality_report(source, normalized, settings, begin, finish, stats, target, a
     ''').format(normalized), {**params, 'low': sample * Decimal(str(1-profile['quality']['interval_tolerance'])),
                               'high': sample * Decimal(str(1+profile['quality']['interval_tolerance']))}).fetchone()
     failures = []
+    warnings = []
     if rows['invalid_names']:
         failures.append('Есть показания без идентификатора счётчика')
     if rows['points'] and rows['duplicates'] / rows['points'] > profile['quality']['max_duplicate_fraction']:
@@ -150,8 +151,18 @@ def quality_report(source, normalized, settings, begin, finish, stats, target, a
     if not counts:
         failures.append('Нет исходных показаний: день не отмечен обработанным')
     coverage = {name: float(Decimal(count) / expected) for name, count in counts.items()}
-    if any(v < profile['quality']['min_coverage'] for v in coverage.values()):
-        failures.append('Неполный день или недостаточно корректных показаний мощности')
+    missing_power = sorted(name for name, count in counts.items() if count == 0)
+    if missing_power:
+        warnings.append('Нет корректной активной мощности; мощность и энергия останутся NULL (нет данных): '
+                        + ', '.join(missing_power)
+                        + '. Полное потребление по всем счётчикам определить нельзя.')
+    insufficient_power = sorted(name for name, value in coverage.items()
+                                if counts[name] > 0 and value < profile['quality']['min_coverage'])
+    if insufficient_power:
+        failures.append('Неполный день или недостаточно корректных показаний мощности: '
+                        + ', '.join(insufficient_power))
+    if counts and not any(counts.values()):
+        failures.append('Нет корректной активной мощности ни у одного счётчика')
     if allowed_sensors is not None and set(counts) - set(allowed_sensors):
         failures.append('Имена счётчиков отсутствуют в справочнике приложения')
     previous = target.execute(sql.SQL('''SELECT sensor_name, SUM(points_count) AS points
@@ -167,7 +178,8 @@ def quality_report(source, normalized, settings, begin, finish, stats, target, a
         point_counts[row['sensor_name']] = point_counts.get(row['sensor_name'], 0) + row['points_count']
     if any(point_counts.get(r['sensor_name'], 0) < float(r['points']) * profile['quality']['min_existing_points_ratio'] for r in previous):
         failures.append('Исчезли счётчики или существенно уменьшилось число показаний')
-    return {**dict(rows), 'coverage': coverage, 'errors': failures}
+    return {**dict(rows), 'coverage': coverage, 'missing_power_sensors': missing_power,
+            'warnings': warnings, 'errors': failures}
 
 
 def refresh(settings: Settings, *, start: date | None = None, end: date | None = None,

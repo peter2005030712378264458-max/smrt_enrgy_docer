@@ -16,7 +16,6 @@
   },
   "scales": {},
   "sensor_map": {},
-  "directory_connection": "paradigm",
   "directory_table": "public.sensor_directory",
   "directory_column": "sensor_name",
   "quality": {

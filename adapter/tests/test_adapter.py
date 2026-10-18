@@ -15,14 +15,39 @@ from psycopg.rows import dict_row
 
 from adapter.mapping import validate_profile, inspect_source, source_cte
 from adapter.model import Settings, plan_window, METRICS
-from adapter.runner import refresh, RefreshError, RefreshInterrupted, target_lock
-from adapter.service import Controller, process_job, schedule_ranges
+from adapter.runner import refresh, RefreshError, RefreshInterrupted, target_lock, fingerprint
+from adapter.service import Controller, process_job, schedule_ranges, connections, directory_alias, build_settings
 from adapter.store import Store
 
 PROFILE = json.loads((Path(__file__).parents[1] / 'profiles/paradigm.json').read_text(encoding='utf-8'))
 
 
 class ModelTests(unittest.TestCase):
+    def test_directory_default_and_explicit_choice_are_independent_of_source(self):
+        registry = {'paradigm': 'dbname=source', 'directory': 'dbname=metadata'}
+        self.assertEqual(directory_alias(PROFILE, registry), 'directory')
+        self.assertEqual(directory_alias({**PROFILE, 'directory_connection': 'paradigm'}, registry), 'paradigm')
+        self.assertEqual(directory_alias(PROFILE, {'paradigm': 'dbname=source'}), 'paradigm')
+        with self.assertRaises(ValueError):
+            directory_alias({**PROFILE, 'directory_connection': 'missing'}, registry)
+        controller = Controller(None, registry)
+        self.assertEqual(controller.dispatch('GET', '/connections', {}), ['paradigm'])
+        with self.assertRaises(ValueError):
+            controller.dispatch('GET', '/tables?connection=directory', {})
+        with self.assertRaises(ValueError):
+            controller.dispatch('POST', '/inspect', {'connection': 'directory', 'source_table': 'public.sensor_directory'})
+
+    def test_directory_dsn_is_registered_without_replacing_source(self):
+        with patch.dict(os.environ, {'ENERGY_ADAPTER_CONNECTIONS': '{}',
+                                    'ENERGY_AGG_SOURCE_DSN': 'dbname=raw user=raw_reader',
+                                    'ENERGY_AGG_DIRECTORY_DSN': 'dbname=raw user=directory_reader'}):
+            registry = connections()
+            self.assertEqual(registry['paradigm'], 'dbname=raw user=raw_reader')
+            self.assertEqual(registry['directory'], 'dbname=raw user=directory_reader')
+            with patch.dict(os.environ, {'ENERGY_ADAPTER_CONNECTIONS': '{"directory":"dbname=other"}'}):
+                with self.assertRaises(ValueError):
+                    connections()
+
     def test_profile_requires_explicit_confirmation(self):
         with self.assertRaises(ValueError):
             validate_profile({**PROFILE, 'confirmed': False})
@@ -101,6 +126,7 @@ class IntegrationTests(unittest.TestCase):
                                  sample_seconds=Decimal(3600), profile=self.profile)
         with psycopg.connect(self.source_dsn, autocommit=True) as conn:
             conn.execute('TRUNCATE customer')
+            conn.execute("TRUNCATE sensor_directory; INSERT INTO sensor_directory VALUES('Meter A')")
             conn.execute("INSERT INTO customer SELECT ts,'42', CASE WHEN EXTRACT(hour FROM ts)<12 THEN 1 ELSE 3 END,230 FROM generate_series(timestamp '2026-10-15 00:00', timestamp '2026-10-15 23:00', interval '1 hour') ts")
         with psycopg.connect(self.target_dsn, autocommit=True) as conn:
             conn.execute('TRUNCATE student_schema.electricity_sensor_readings_hourly,student_schema.electricity_sensor_readings_daily,adapter_control.jobs,adapter_control.profiles CASCADE')
@@ -108,7 +134,8 @@ class IntegrationTests(unittest.TestCase):
 
     def run_refresh(self, apply=False, **kwargs):
         return refresh(self.settings, start=date(2026, 10, 15), end=date(2026, 10, 16), apply=apply,
-                       now=datetime(2026, 10, 18, tzinfo=timezone.utc), allowed_sensors={'Meter A'}, **kwargs)
+                       now=datetime(2026, 10, 18, tzinfo=timezone.utc),
+                       allowed_sensors=kwargs.pop('allowed_sensors', {'Meter A'}), **kwargs)
 
     def totals(self):
         with psycopg.connect(self.target_dsn, row_factory=dict_row) as conn:
@@ -190,6 +217,85 @@ class IntegrationTests(unittest.TestCase):
         with psycopg.connect(self.target_dsn) as conn:
             self.assertIsNone(conn.execute('SELECT energy_kwh FROM student_schema.electricity_sensor_readings_daily').fetchone()[0])
 
+    def add_meter_without_power(self, value=None):
+        self.profile['sensor_map']['43'] = 'Meter B'
+        with psycopg.connect(self.source_dsn) as conn:
+            conn.execute("INSERT INTO customer SELECT время,'43',%s,voltage FROM customer WHERE meter_id='42'", (value,))
+            conn.execute("INSERT INTO sensor_directory VALUES('Meter B')")
+
+    def test_missing_power_warns_and_preserves_other_metrics_and_valid_energy(self):
+        self.add_meter_without_power()
+        preview = self.run_refresh(allowed_sensors={'Meter A', 'Meter B'})
+        quality = next(event for event in preview if event['event'] == 'quality')
+        self.assertEqual(quality['errors'], [])
+        self.assertEqual(quality['missing_power_sensors'], ['Meter B'])
+        self.assertEqual(quality['coverage'], {'Meter A': 1, 'Meter B': 0})
+        self.assertIn('NULL', quality['warnings'][0])
+        self.assertEqual(self.totals()['rows'], 0)
+        for _ in range(2):
+            self.run_refresh(True, allowed_sensors={'Meter A', 'Meter B'})
+        self.assertEqual(self.totals(), {'rows': 48, 'energy': Decimal(48)})
+        with psycopg.connect(self.target_dsn) as conn:
+            missing = conn.execute("""SELECT points_count,active_power_w_avg,active_power_w_max,
+                energy_kwh,voltage_avg_v FROM student_schema.electricity_sensor_readings_daily
+                WHERE sensor_name='Meter B'""").fetchone()
+            self.assertEqual(missing, (24, None, None, None, Decimal(230)))
+            self.assertEqual(conn.execute("""SELECT COUNT(*) FROM student_schema.electricity_sensor_readings_hourly
+                WHERE sensor_name='Meter B' AND energy_kwh IS NULL AND active_power_w_avg IS NULL
+                AND voltage_avg_v=230""").fetchone()[0], 24)
+            # A complete total must remain unknown, rather than silently omitting Meter B.
+            self.assertIsNone(conn.execute('''SELECT CASE WHEN COUNT(*)=COUNT(energy_kwh)
+                THEN SUM(energy_kwh) ELSE NULL END FROM student_schema.electricity_sensor_readings_daily''').fetchone()[0])
+
+    def test_real_zero_power_is_valid_and_has_zero_energy(self):
+        with psycopg.connect(self.source_dsn) as conn:
+            conn.execute('UPDATE customer SET power_kw=0')
+        events = self.run_refresh(True)
+        quality = next(event for event in events if event['event'] == 'quality')
+        self.assertEqual(quality['warnings'], [])
+        self.assertEqual(quality['missing_power_sensors'], [])
+        self.assertEqual(quality['coverage'], {'Meter A': 1})
+        self.assertEqual(self.totals(), {'rows': 24, 'energy': Decimal(0)})
+
+    def test_no_valid_power_anywhere_still_blocks_and_preserves_target(self):
+        self.run_refresh(True)
+        with psycopg.connect(self.source_dsn) as conn:
+            conn.execute('UPDATE customer SET power_kw=NULL')
+        with self.assertRaisesRegex(RefreshError, 'ни у одного счётчика'):
+            self.run_refresh(True)
+        self.assertEqual(self.totals(), {'rows': 24, 'energy': Decimal(48)})
+
+    def test_partial_power_loss_still_blocks_despite_other_missing_sensor(self):
+        self.run_refresh(True)
+        self.add_meter_without_power()
+        with psycopg.connect(self.source_dsn) as conn:
+            conn.execute("UPDATE customer SET power_kw=NULL WHERE meter_id='42' AND время>='2026-10-15 02:00'")
+        with self.assertRaisesRegex(RefreshError, 'недостаточно корректных показаний мощности: Meter A'):
+            self.run_refresh(True, allowed_sensors={'Meter A', 'Meter B'})
+        self.assertEqual(self.totals(), {'rows': 24, 'energy': Decimal(48)})
+
+    def test_nonfinite_power_warns_without_writing_nonfinite_aggregates(self):
+        self.add_meter_without_power(Decimal('NaN'))
+        events = self.run_refresh(True, allowed_sensors={'Meter A', 'Meter B'})
+        self.assertEqual(next(e for e in events if e['event'] == 'quality')['missing_power_sensors'], ['Meter B'])
+        with psycopg.connect(self.target_dsn) as conn:
+            self.assertIsNone(conn.execute("SELECT energy_kwh FROM student_schema.electricity_sensor_readings_daily WHERE sensor_name='Meter B'").fetchone()[0])
+
+    def test_preview_with_warning_can_be_applied_through_service(self):
+        self.add_meter_without_power()
+        controller = self.controller()
+        with patch.dict(os.environ, {'ENERGY_AGG_TARGET_DSN': self.target_dsn}):
+            profile = controller.dispatch('POST', '/profiles', self.profile)
+            request = {'profile_id': profile['id'], 'from': '2026-10-15', 'to': '2026-10-16'}
+            preview = controller.dispatch('POST', '/jobs', request)
+            process_job(controller, preview)
+            self.assertTrue(self.store.profile(profile['id'])['validated'])
+            self.assertTrue(next(e for e in self.store.job(preview['id'])['events'] if e['event'] == 'quality')['warnings'])
+            self.store.query("UPDATE adapter_control.jobs SET status='succeeded' WHERE id=%s", (preview['id'],))
+            apply = controller.dispatch('POST', '/jobs', {**request, 'kind': 'apply', 'preview_id': preview['id']})
+            process_job(controller, apply)
+            self.assertEqual(self.totals(), {'rows': 48, 'energy': Decimal(48)})
+
     def test_inspection_and_schema_change(self):
         with psycopg.connect(self.source_dsn, row_factory=dict_row) as conn:
             report = inspect_source(conn, 'public.customer')
@@ -263,3 +369,34 @@ class IntegrationTests(unittest.TestCase):
             process_job(controller, repeat)
             self.assertEqual(self.totals()['rows'], 24)
             self.assertEqual(self.store.profile(profile['id'])['processed_until'], date(2026, 10, 14))
+
+    def test_separate_directory_reader_with_real_restricted_roles(self):
+        raw_role, metadata_role = 'adapter_test_raw_reader', 'adapter_test_directory_reader'
+        with psycopg.connect(self.source_dsn, autocommit=True) as conn:
+            for role in (raw_role, metadata_role):
+                if not conn.execute('SELECT 1 FROM pg_roles WHERE rolname=%s', (role,)).fetchone():
+                    conn.execute(sql.SQL("CREATE ROLE {} LOGIN PASSWORD 'test-only-reader'").format(sql.Identifier(role)))
+                conn.execute(sql.SQL('GRANT USAGE ON SCHEMA public TO {}').format(sql.Identifier(role)))
+            conn.execute(sql.SQL('GRANT SELECT ON public.customer TO {}').format(sql.Identifier(raw_role)))
+            conn.execute(sql.SQL('GRANT SELECT ON public.sensor_directory TO {}').format(sql.Identifier(metadata_role)))
+        raw_dsn = make_conninfo(self.source_dsn, user=raw_role, password='test-only-reader')
+        directory_dsn = make_conninfo(self.source_dsn, user=metadata_role, password='test-only-reader')
+        with psycopg.connect(raw_dsn) as conn:
+            with self.assertRaises(psycopg.errors.InsufficientPrivilege):
+                conn.execute('SELECT * FROM public.sensor_directory')
+        with patch.dict(os.environ, {'ENERGY_AGG_TARGET_DSN': self.target_dsn}):
+            controller = Controller(self.store, {'paradigm': raw_dsn, 'directory': directory_dsn})
+            profile = controller.dispatch('POST', '/profiles', self.profile)
+            stored_signature = self.store.profile(profile['id'])['signature']
+            # An already saved source-only profile remains valid when a metadata reader is added.
+            self.assertEqual(stored_signature, fingerprint(build_settings(self.profile, {'paradigm': raw_dsn})))
+            preview = self.store.enqueue(profile['id'], 'preview', date(2026, 10, 15), date(2026, 10, 16))
+            process_job(controller, preview)
+            self.assertTrue(self.store.profile(profile['id'])['validated'])
+            self.assertEqual(self.totals()['rows'], 0)
+            apply = self.store.enqueue(profile['id'], 'apply', date(2026, 10, 15), date(2026, 10, 16))
+            process_job(controller, apply)
+            self.assertEqual(self.totals(), {'rows': 24, 'energy': Decimal(48)})
+            with psycopg.connect(directory_dsn) as conn:
+                with self.assertRaises(psycopg.errors.InsufficientPrivilege):
+                    conn.execute('SELECT * FROM public.customer')

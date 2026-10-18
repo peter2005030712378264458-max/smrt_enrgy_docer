@@ -49,15 +49,30 @@ def connections():
     registry = json.loads(os.environ.get('ENERGY_ADAPTER_CONNECTIONS', '{}'))
     if os.environ.get('ENERGY_AGG_SOURCE_DSN'):
         registry.setdefault('paradigm', os.environ['ENERGY_AGG_SOURCE_DSN'])
+    directory_dsn = os.environ.get('ENERGY_AGG_DIRECTORY_DSN')
+    if directory_dsn:
+        if 'directory' in registry and registry['directory'] != directory_dsn:
+            raise ValueError('Псевдоним directory уже задан с другим подключением')
+        registry['directory'] = directory_dsn
     if not registry or any(not isinstance(v, str) for v in registry.values()):
         raise ValueError('Настройте серверные подключения ENERGY_ADAPTER_CONNECTIONS')
     return registry
 
 
+def directory_alias(document, registry):
+    """Explicit profile choice wins; otherwise use the dedicated metadata reader."""
+    alias = document.get('directory_connection') or (
+        'directory' if 'directory' in registry else document['connection'])
+    if alias not in registry:
+        raise ValueError('Неизвестное подключение справочника')
+    return alias
+
+
 def build_settings(document, registry):
     profile = validate_profile(document)
-    if profile.get('connection') not in registry or profile.get('directory_connection', profile['connection']) not in registry:
+    if profile.get('connection') not in registry or profile.get('connection') == 'directory':
         raise ValueError('Неизвестное серверное подключение')
+    directory_alias(profile, registry)
     return Settings(registry[profile['connection']], os.environ['ENERGY_AGG_TARGET_DSN'],
                     source_table=profile['source_table'], profile=profile,
                     sample_seconds=Decimal(str(profile['sample_seconds'])), timezone=profile.get('timezone', 'Europe/Moscow'),
@@ -65,7 +80,7 @@ def build_settings(document, registry):
 
 
 def directory_names(document, registry):
-    dsn = registry[document.get('directory_connection', document['connection'])]
+    dsn = registry[directory_alias(document, registry)]
     with psycopg.connect(dsn, autocommit=True, row_factory=dict_row, connect_timeout=8) as conn:
         conn.execute("SET default_transaction_read_only=on")
         conn.execute("SET statement_timeout='15s'")
@@ -95,10 +110,10 @@ class Controller:
             self.store.query('SELECT id FROM adapter_control.settings WHERE id=1')
             return {'status': 'ok'}
         if method == 'GET' and route == ['connections']:
-            return sorted(self.registry)
+            return sorted(alias for alias in self.registry if alias != 'directory')
         if method == 'GET' and route == ['tables']:
             alias = parse_qs(parts.query).get('connection', [''])[0]
-            if alias not in self.registry:
+            if alias not in self.registry or alias == 'directory':
                 raise ValueError('Неизвестное подключение')
             with psycopg.connect(self.registry[alias], autocommit=True, row_factory=dict_row, connect_timeout=8) as conn:
                 conn.execute("SET default_transaction_read_only=on")
@@ -150,7 +165,7 @@ class Controller:
         if method == 'POST' and route == ['inspect']:
             # Inspection needs only table/alias; not an approved measurement mapping.
             alias, table = body['connection'], body['source_table']
-            if alias not in self.registry:
+            if alias not in self.registry or alias == 'directory':
                 raise ValueError('Неизвестное подключение')
             table_parts(table)
             # Store an immutable inspection document, not an activatable profile.

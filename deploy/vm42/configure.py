@@ -102,15 +102,12 @@ def main():
     write_configuration(directory, settings, scan)
     ssl = directory / 'ssl'
     ssl.mkdir(exist_ok=True)
-    repo = directory.parents[1]
-    for name in ('nginx.crt', 'nginx.key'):
-        if (repo / 'ssl' / name).exists():
-            shutil.copyfile(repo / 'ssl' / name, ssl / name)
     if not (ssl / 'nginx.crt').exists() and not (ssl / 'nginx.key').exists():
         openssl = shutil.which('openssl') or 'C:/Program Files/Git/usr/bin/openssl.exe'
         subprocess.run([openssl, 'req', '-x509', '-nodes', '-days', '365', '-newkey', 'rsa:2048',
                         '-keyout', str(ssl / 'nginx.key'), '-out', str(ssl / 'nginx.crt'),
-                        '-subj', '/CN=localhost', '-addext', 'subjectAltName=DNS:localhost,IP:127.0.0.1'], check=True)
+                        '-subj', '/CN=193.232.208.42', '-addext',
+                        'subjectAltName=DNS:localhost,IP:127.0.0.1,IP:193.232.208.42'], check=True)
     if not all((ssl / name).exists() for name in ('nginx.crt', 'nginx.key')):
         raise SystemExit('Provide both ssl/nginx.crt and ssl/nginx.key before starting')
     (ssl / 'nginx.key').chmod(0o600)

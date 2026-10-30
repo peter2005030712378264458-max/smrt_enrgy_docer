@@ -122,10 +122,12 @@ services:
         NGINX_CONFIG: nginx.vm42.conf
     environment:
       API_PROXY_TARGET: http://127.0.0.1:15000
+      VM42_HTTPS_BIND: ${VM42_HTTPS_BIND:-0.0.0.0}
       VM42_HTTPS_PORT: ${VM42_HTTPS_PORT:-8443}
     volumes:
       - ./deploy/vm42/ssl/nginx.crt:/etc/nginx/ssl/nginx.crt:ro
       - ./deploy/vm42/ssl/nginx.key:/etc/nginx/ssl/nginx.key:ro
+      - ./deploy/vm42/https-allow.conf:/etc/nginx/https-allow.conf:ro
     depends_on:
       - backend
     restart: unless-stopped

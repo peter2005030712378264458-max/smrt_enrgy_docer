@@ -13,7 +13,7 @@ from psycopg import sql
 from psycopg.conninfo import make_conninfo
 from psycopg.rows import dict_row
 
-from adapter.mapping import validate_profile, inspect_source, source_cte
+from adapter.mapping import validate_profile, inspect_source, source_cte, column_types
 from adapter.model import Settings, plan_window, METRICS
 from adapter.runner import refresh, RefreshError, RefreshInterrupted, target_lock, fingerprint
 from adapter.service import Controller, process_job, schedule_ranges, connections, directory_alias, build_settings
@@ -301,8 +301,33 @@ class IntegrationTests(unittest.TestCase):
             report = inspect_source(conn, 'public.customer')
             self.assertEqual(report['suggestions']['ts']['column'], 'время')
             self.assertEqual(report['suggestions']['sensor_name']['column'], 'meter_id')
+            self.assertEqual(len(report['sample']), 5)
             with self.assertRaises(ValueError):
                 source_cte(self.profile, {'время': 'timestamp'})
+
+    def test_inspection_samples_indexed_timestamps_without_hardcoded_column_names(self):
+        with psycopg.connect(self.source_dsn, row_factory=dict_row) as conn:
+            conn.execute('CREATE INDEX test_customer_time_idx ON public.customer ("время")')
+            try:
+                report = inspect_source(conn, 'public.customer')
+                self.assertEqual([row['время'].hour for row in report['sample']], [23, 22, 21, 20, 19])
+            finally:
+                conn.execute('DROP INDEX test_customer_time_idx')
+
+    def test_inspection_without_timestamp(self):
+        with psycopg.connect(self.source_dsn, row_factory=dict_row) as conn:
+            report = inspect_source(conn, 'public.sensor_directory')
+            self.assertIsNone(report['suggestions']['ts']['column'])
+            self.assertEqual(report['sample'], [{'sensor_name': 'Meter A'}])
+
+    def test_column_types_do_not_read_samples_when_source_rows_are_locked(self):
+        with psycopg.connect(self.source_dsn) as blocker:
+            blocker.execute('LOCK TABLE public.customer IN ACCESS EXCLUSIVE MODE')
+            with psycopg.connect(self.source_dsn, row_factory=dict_row) as conn:
+                conn.execute("SET statement_timeout='1s'")
+                types = column_types(conn, self.profile)
+                self.assertEqual(types['время'], 'timestamp')
+                self.assertEqual(types['power_kw'], 'numeric')
 
     def controller(self):
         return Controller(self.store, {'paradigm': self.source_dsn})

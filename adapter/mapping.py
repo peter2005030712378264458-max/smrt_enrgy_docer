@@ -84,7 +84,7 @@ def validate_profile(value):
     return value
 
 
-def inspect_source(connection, table_name):
+def _source_columns(connection, table_name):
     schema, name = table_parts(table_name)
     columns = connection.execute('''
         SELECT a.attname AS name, t.typname AS type, col_description(c.oid,a.attnum) AS comment
@@ -95,12 +95,39 @@ def inspect_source(connection, table_name):
     ''', (schema, name)).fetchall()
     if not columns:
         raise ValueError('Таблица не найдена или не содержит столбцов')
+    return columns
+
+
+def inspect_source(connection, table_name):
+    schema, name = table_parts(table_name)
+    columns = _source_columns(connection, table_name)
     suggestions = {}
     for field in FIELDS:
         matches = [c['name'] for c in columns if c['name'].casefold() in ALIASES[field]]
         suggestions[field] = {'column': matches[0] if len(matches) == 1 else None,
                               'candidates': matches, 'needs_confirmation': True}
-    sample = connection.execute(sql.SQL('SELECT * FROM {} LIMIT 5').format(sql.Identifier(schema, name))).fetchall()
+    order = sql.SQL('')
+    timestamp = suggestions['ts']['column']
+    if any(c['name'] == timestamp and c['type'] in ('timestamp', 'timestamptz') for c in columns):
+        indexed = connection.execute('''
+            SELECT EXISTS (
+                SELECT 1 FROM pg_index i
+                JOIN pg_class c ON c.oid=i.indrelid
+                JOIN pg_namespace n ON n.oid=c.relnamespace
+                JOIN pg_class idx ON idx.oid=i.indexrelid
+                JOIN pg_am am ON am.oid=idx.relam
+                JOIN pg_attribute a ON a.attrelid=c.oid AND a.attnum=i.indkey[0]
+                WHERE n.nspname=%s AND c.relname=%s AND a.attname=%s
+                  AND am.amname='btree' AND i.indisvalid AND i.indisready
+                  AND i.indpred IS NULL
+            ) AS available
+        ''', (schema, name, timestamp)).fetchone()['available']
+        if indexed:
+            # An unordered scan can spend the entire timeout on empty heap pages.
+            # Only order by time when a leading B-tree key can avoid a full sort.
+            order = sql.SQL(' ORDER BY {} DESC').format(sql.Identifier(timestamp))
+    sample = connection.execute(sql.SQL('SELECT * FROM {}{} LIMIT 5').format(
+        sql.Identifier(schema, name), order)).fetchall()
     return {'columns': columns, 'suggestions': suggestions, 'sample': sample,
             'notice': 'Единицы и семантика не определяются надёжно по названию. Подтвердите профиль.'}
 
@@ -135,4 +162,4 @@ def source_cte(profile, column_types):
 
 
 def column_types(connection, profile):
-    return {c['name']: c['type'] for c in inspect_source(connection, profile['source_table'])['columns']}
+    return {c['name']: c['type'] for c in _source_columns(connection, profile['source_table'])}

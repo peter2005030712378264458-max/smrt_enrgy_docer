@@ -4,6 +4,7 @@ import { aggregationRequest, getSourceTables } from '../../features/aggregation/
 import { ROUTES } from '../../app/routes.js'
 import { formatDateTime, formatNumber } from '../dashboard/dashboardUtils.js'
 import ThemeToggle from '../../shared/theme/ThemeToggle.jsx'
+import ColumnMappingEditor from './ColumnMappingEditor.jsx'
 import './aggregation.css'
 
 const FIELDS = {
@@ -161,8 +162,7 @@ export default function AggregationPage() {
           </div>
           {inspectionJob && <p role="status">Обследование: {STATUS[inspectionJob.status]} {inspectionJob.error}</p>}
           <p>Преобразование в Вт, вар, В·А, А, В и Гц: множитель 1 сохраняет единицу, 1000 переводит кВт в Вт. Название столбца не подтверждает единицу.</p>
-          <div className="aggregation-table-scroll"><table><thead><tr><th>Назначение</th><th>Столбец источника</th><th>Множитель</th></tr></thead><tbody>{Object.entries(FIELDS).map(([key, label]) => <tr key={key}><td>{label}</td><td><input list="source-columns" value={profile.columns[key] ?? ''} placeholder="Не задан" onChange={(e) => changeProfile('columns', { ...profile.columns, [key]: e.target.value || null })} /></td><td>{!['ts', 'sensor_name'].includes(key) && <input type="number" min="0.000001" step="any" aria-label={`Множитель: ${label}`} value={profile.scales?.[key] ?? 1} onChange={(e) => changeProfile('scales', { ...profile.scales, [key]: Number(e.target.value) })} />}</td></tr>)}</tbody></table></div>
-          <datalist id="source-columns">{effectiveInspection?.columns.map((column) => <option key={column.name} value={column.name}>{column.type} {column.comment}</option>)}</datalist>
+          <ColumnMappingEditor key={`${profile.connection}:${profile.source_table}`} fields={FIELDS} profile={profile} inspection={effectiveInspection} onChange={changeProfile} />
           {effectiveInspection && <details><summary>Структура и пример показаний</summary><pre>{JSON.stringify({ columns: effectiveInspection.columns, sample: effectiveInspection.sample }, null, 2)}</pre></details>}
           <details><summary>Справочник, соответствия ID и пороги качества</summary><p>JSON: sensor_map связывает ID заказчика с именами приложения. Порог min_coverage — минимальная доля показаний за сутки.</p><textarea rows="12" aria-label="Дополнительная конфигурация" value={advanced} onChange={(e) => { setAdvanced(e.target.value); setSelectedId(''); setProfile({ ...profile, confirmed: false }) }} placeholder={'{"sensor_map": {}, "quality": {"min_coverage": 0.9}}'} /></details>
           <label className="aggregation-check"><input type="checkbox" checked={profile.confirmed} onChange={(e) => changeProfile('confirmed', e.target.checked)} />Подтверждаю соответствия, единицы, интервал и часовой пояс</label>

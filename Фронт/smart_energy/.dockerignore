@@ -2,4 +2,5 @@
 !Dockerfile
 !nginx.conf
 !nginx.vm.conf
+!nginx.vm42.conf
 !frontend-dist.tar.gz

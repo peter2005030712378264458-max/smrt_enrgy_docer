@@ -315,7 +315,8 @@ def serve():
         do_GET = handle_request
         do_POST = handle_request
 
-    server = ThreadingHTTPServer(('0.0.0.0', int(os.environ.get('ENERGY_ADAPTER_PORT', '8002'))), Handler)
+    server = ThreadingHTTPServer((os.environ.get('ENERGY_ADAPTER_HOST', '0.0.0.0'),
+                                 int(os.environ.get('ENERGY_ADAPTER_PORT', '8002'))), Handler)
     server.timeout = 1
     server.daemon_threads = True
     thread = threading.Thread(target=worker, args=(controller, stop), daemon=True)

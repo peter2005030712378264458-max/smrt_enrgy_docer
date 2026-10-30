@@ -1,0 +1,160 @@
+version: '3.8'
+
+# Standalone VM deployment; do not combine with docker-compose.yml.
+x-app: &app
+  network_mode: host
+  env_file:
+    - ./deploy/vm42/app.env
+  restart: unless-stopped
+
+services:
+  db:
+    image: postgres:17-alpine
+    network_mode: host
+    command: ['postgres', '-c', 'listen_addresses=127.0.0.1', '-p', '25433']
+    environment:
+      POSTGRES_DB: student
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD_FILE: /run/secrets/database_password
+    secrets:
+      - database_password
+    volumes:
+      - vm42-postgres:/var/lib/postgresql/data
+      - ./deploy/vm42/backups:/backups:ro
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U postgres -p 25433 -d student']
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+
+  source-db:
+    image: smart-energy-ssh-tunnel
+    network_mode: host
+    build: ./deploy/ssh-tunnel
+    environment:
+      SSH_HOST: ${SOURCE_SSH_HOST:-193.232.208.50}
+      SSH_PORT: ${SOURCE_SSH_PORT:-22}
+      SSH_USER: ${SOURCE_SSH_USER:-restricted_user}
+      TUNNEL_LISTEN_HOST: '127.0.0.1'
+      TUNNEL_LISTEN_PORT: '25432'
+      TUNNEL_DEST_HOST: '127.0.0.1'
+      TUNNEL_DEST_PORT: '5432'
+    volumes:
+      - ./deploy/vm42/secrets/source_ssh_password:/run/secrets/ssh_password:ro
+      - ./deploy/vm42/secrets/known_hosts:/run/secrets/known_hosts:ro
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -h 127.0.0.1 -p 25432']
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+
+  analytical:
+    <<: *app
+    image: smart-energy-vm42-analytical
+    build:
+      context: ./Аналитический сервис/Analytical_service
+    command: ['uvicorn', 'app.main:app', '--host', '127.0.0.1', '--port', '18001']
+    depends_on:
+      db:
+        condition: service_healthy
+
+  backend:
+    <<: *app
+    image: smart-energy-vm42-backend
+    build:
+      context: ./Бэк/project_backend
+    environment:
+      RUNNING_IN_DOCKER: '1'
+      DJANGO_USE_GUNICORN: '1'
+      DJANGO_DEBUG: '0'
+      DJANGO_SECRET_KEY_FILE: /run/smart-energy/django_secret_key
+      DJANGO_TRUST_PROXY_HEADERS: '1'
+      DJANGO_REFRESH_COOKIE_SECURE: '1'
+      RUN_DJANGO_MIGRATIONS: '1'
+      RUN_ENERGY_INDEXES: '0'
+      ANALYTICS_SERVICE_URL: http://127.0.0.1:18001
+      ENERGY_ADAPTER_URL: http://127.0.0.1:18002
+      GUNICORN_BIND: 127.0.0.1:15000
+    volumes:
+      - vm42-django-secret:/run/smart-energy
+    depends_on:
+      db:
+        condition: service_healthy
+      source-db:
+        condition: service_healthy
+      analytical:
+        condition: service_started
+
+  adapter:
+    <<: *app
+    image: smart-energy-vm42-adapter
+    environment:
+      ENERGY_ADAPTER_HOST: '127.0.0.1'
+      ENERGY_ADAPTER_PORT: '18002'
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import os, urllib.request; r=urllib.request.Request('http://127.0.0.1:18002/health', headers={'X-Internal-Token':os.environ['ENERGY_ADAPTER_TOKEN']}); urllib.request.urlopen(r, timeout=4).close()"
+      interval: 10s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+    build:
+      context: .
+      dockerfile: adapter/Dockerfile
+    depends_on:
+      db:
+        condition: service_healthy
+      source-db:
+        condition: service_healthy
+    stop_grace_period: 150s
+
+  frontend:
+    image: smart-energy-vm42-frontend
+    network_mode: host
+    build:
+      context: ./Фронт/smart_energy
+      args:
+        NGINX_CONFIG: nginx.vm42.conf
+    environment:
+      API_PROXY_TARGET: http://127.0.0.1:15000
+      VM42_HTTPS_PORT: ${VM42_HTTPS_PORT:-8443}
+    volumes:
+      - ./deploy/vm42/ssl/nginx.crt:/etc/nginx/ssl/nginx.crt:ro
+      - ./deploy/vm42/ssl/nginx.key:/etc/nginx/ssl/nginx.key:ro
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+  migrate:
+    image: postgres:17-alpine
+    network_mode: host
+    profiles: [tools]
+    environment:
+      SOURCE_APP_USER: ${SOURCE_APP_USER:-student}
+    entrypoint: ['sh', '/migration.sh']
+    volumes:
+      - ./deploy/vm42/migrate.sh:/migration.sh:ro
+      - ./deploy/vm42/backups:/backups
+    secrets:
+      - database_password
+      - source_app_password
+    depends_on:
+      db:
+        condition: service_healthy
+      source-db:
+        condition: service_healthy
+
+secrets:
+  database_password:
+    file: ./deploy/vm42/secrets/database_password
+  source_app_password:
+    file: ./deploy/vm42/secrets/source_app_password
+
+volumes:
+  vm42-postgres:
+  vm42-django-secret:

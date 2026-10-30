@@ -25,6 +25,11 @@ ssl/*.crt
 ssl/*.key
 energy_aggregation/
 adapter/state/
+deploy/vm42/app.env
+deploy/vm42/secrets/
+deploy/vm42/ssl/
+deploy/vm42/backups/
+deploy/vm42/.restore-complete
 
 # Operating-system metadata
 .DS_Store

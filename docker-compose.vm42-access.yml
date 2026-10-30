@@ -1,0 +1,25 @@
+version: '3.8'
+
+# Run on the PC, not on the VM. Only SSH port 22 is needed on the VM.
+services:
+  dashboard:
+    image: smart-energy-ssh-tunnel
+    build: ./deploy/ssh-tunnel
+    environment:
+      SSH_HOST: ${VM42_SSH_HOST:-193.232.208.42}
+      SSH_PORT: ${VM42_SSH_PORT:-22}
+      SSH_USER: ${VM42_SSH_USER:-collective}
+      TUNNEL_LISTEN_PORT: '8443'
+      TUNNEL_DEST_HOST: '127.0.0.1'
+      TUNNEL_DEST_PORT: ${VM42_HTTPS_PORT:-8443}
+    ports:
+      - '127.0.0.1:${DASHBOARD_PORT:-8443}:8443'
+    volumes:
+      - ./deploy/vm42/secrets/target_ssh_password:/run/secrets/ssh_password:ro
+      - ./deploy/vm42/secrets/known_hosts:/run/secrets/known_hosts:ro
+    healthcheck:
+      test: ['CMD-SHELL', 'nc -z 127.0.0.1 8443']
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    restart: unless-stopped

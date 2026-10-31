@@ -61,6 +61,7 @@ def check_exact_metric_weights(q, metadata, settings_class, period_class, fetch_
             connection.execute("UPDATE student_schema.electricity_sensor_readings_hourly SET active_power_w_avg_count=NULL WHERE bucket_start >= '2026-10-16 00:00+03'")
         summary = q.get_summary(request)
         assert summary['unverified_rows'] == 24 and summary['total_energy_kwh'] is None
+        assert summary['current_power_kw'] is None and summary['avg_power_kw'] is None and summary['max_power_kw'] is None
         assert q.get_top_devices(request)[0]['energy_kwh'] is None
     settings = settings_class(ANALYTICS_POSTGRES_HOST='db', ANALYTICS_POSTGRES_PORT=5432,
         ANALYTICS_POSTGRES_DB='test_adapter_target', ANALYTICS_POSTGRES_USER='postgres',

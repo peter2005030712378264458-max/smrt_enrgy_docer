@@ -428,7 +428,10 @@ def _weighted_avg_sql(column: str, alias: str = "a") -> str:
 
 
 def _summed_metric_sql(column: str, alias: str = "a") -> str:
-    return (f"CASE WHEN COUNT(*)=COUNT({alias}.{column}) "
+    known = f'COUNT(*)=COUNT({alias}.{column})'
+    if column in POWER_METRICS:
+        known += f' AND COUNT(*)=COUNT({alias}.{column}_count)'
+    return (f"CASE WHEN {known} "
             f"THEN SUM({alias}.{column}) ELSE NULL END")
 
 

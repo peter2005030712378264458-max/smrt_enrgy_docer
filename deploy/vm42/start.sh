@@ -18,6 +18,10 @@ done
 if [ ! -f deploy/vm42/backups/restore-complete ]; then
   compose run --rm migrate
 fi
+# Stop the previous writer before the explicit, additive aggregate upgrade.
+# The database volume and existing readings remain in place.
+compose stop adapter
+compose run --rm --no-deps adapter upgrade-aggregates
 compose up -d --no-build
 compose exec -T adapter python -m adapter init-control
 compose ps

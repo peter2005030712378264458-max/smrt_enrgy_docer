@@ -121,8 +121,11 @@ def fetch_period_stats(
         data_filter = "AND a.sensor_name::text = ANY(%(data_names)s)"
         params["data_names"] = data_names
 
-    complete_power_sql = 'CASE WHEN COUNT(*)=COUNT(a.active_power_w_avg) THEN SUM(a.active_power_w_avg) / 1000.0 ELSE NULL END'
-    energy_sql = ('CASE WHEN COUNT(*)=COUNT(a.energy_kwh) THEN SUM(a.energy_kwh) ELSE NULL END'
+    complete_power_sql = ('CASE WHEN COUNT(*)=COUNT(a.active_power_w_avg) AND COUNT(*)=COUNT(a.active_power_w_avg_count) '
+                          'THEN SUM(a.active_power_w_avg) / 1000.0 ELSE NULL END')
+    energy_sql = ('CASE WHEN COUNT(*)=COUNT(a.energy_kwh) '
+                  'AND COUNT(*)=COUNT(*) FILTER (WHERE a.active_power_w_avg_count=a.points_count) '
+                  'THEN SUM(a.energy_kwh) ELSE NULL END'
                   if settings.use_stored_energy else complete_power_sql)
 
     sql = f"""

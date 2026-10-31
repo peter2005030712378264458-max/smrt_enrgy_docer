@@ -16,8 +16,10 @@ DAILY_METRICS = (
     "active_power_w_avg", "reactive_power_var_avg", "apparent_power_va_avg",
     "voltage_avg_v", "frequency_hz_avg", "meter_temperature_avg",
 )
-HOURLY_COLUMNS = ("bucket_start", "sensor_name", "points_count", "active_power_w_max", *METRICS, "energy_kwh")
-DAILY_COLUMNS = ("bucket_start", "sensor_name", "points_count", "active_power_w_max", *DAILY_METRICS, "energy_kwh")
+HOURLY_COLUMNS = ("bucket_start", "sensor_name", "points_count", "active_power_w_max", *METRICS,
+                  *(metric + '_count' for metric in METRICS), "energy_kwh")
+DAILY_COLUMNS = ("bucket_start", "sensor_name", "points_count", "active_power_w_max", *DAILY_METRICS,
+                 *(metric + '_count' for metric in DAILY_METRICS), "energy_kwh")
 
 
 def table_parts(value: str) -> tuple[str, str]:
@@ -106,6 +108,7 @@ def build_rows(stats: list[dict], settings: Settings) -> tuple[list[dict], list[
             for metric in METRICS:
                 count = item[metric + "_count"]
                 row[metric] = item[metric + "_sum"] / count if count else None
+                row[metric + '_count'] = count
             power_sum = item["active_power_w_avg_sum"]
             row["energy_kwh"] = (
                 power_sum * settings.sample_seconds / Decimal(3600000)
@@ -137,7 +140,7 @@ def build_rows(stats: list[dict], settings: Settings) -> tuple[list[dict], list[
             if not total.pop('_energy_complete'):
                 total['energy_kwh'] = None
             for metric in DAILY_METRICS:
-                count = total.pop(metric + "_count")
+                count = total[metric + "_count"]
                 summed = total.pop(metric + "_sum")
                 total[metric] = summed / count if count else None
     return hourly, list(daily.values())

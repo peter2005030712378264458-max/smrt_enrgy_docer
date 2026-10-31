@@ -49,7 +49,8 @@ class StoredEnergyTests(SimpleTestCase):
         for granularity in ('hour', 'day', 'week'):
             expression = dashboard_queries._bucket_energy_sql(granularity)
             self.assertIn('SUM(a.energy_kwh)', expression)
-            self.assertNotIn('active_power', expression)
+            self.assertNotIn('SUM(a.active_power_w_avg)', expression)
+            self.assertIn('a.active_power_w_avg_count = a.points_count', expression)
             self.assertIn('COUNT(a.energy_kwh)', expression)
 
     def test_missing_room_energy_does_not_become_zero(self):

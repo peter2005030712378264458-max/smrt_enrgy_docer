@@ -112,8 +112,10 @@ class IntegrationTests(unittest.TestCase):
                 ('electricity_sensor_readings_hourly', __import__('adapter.model', fromlist=['HOURLY_COLUMNS']).HOURLY_COLUMNS, 'timestamptz'),
                 ('electricity_sensor_readings_daily', __import__('adapter.model', fromlist=['DAILY_COLUMNS']).DAILY_COLUMNS, 'date')):
                 definitions = [sql.SQL('{} {}').format(sql.Identifier(c), sql.SQL(
-                    bucket_type if c == 'bucket_start' else 'text' if c == 'sensor_name' else 'bigint' if c == 'points_count' else 'numeric')) for c in columns]
+                    bucket_type if c == 'bucket_start' else 'text' if c == 'sensor_name' else 'bigint' if c == 'points_count' or c.endswith('_count') else 'numeric')) for c in columns]
                 conn.execute(sql.SQL('CREATE TABLE IF NOT EXISTS student_schema.{} ({}, PRIMARY KEY(bucket_start,sensor_name))').format(sql.Identifier(table), sql.SQL(',').join(definitions)))
+        from adapter.schema import upgrade_aggregates
+        upgrade_aggregates(Settings('', cls.target_dsn))
         cls.store = Store(cls.target_dsn)
         cls.store.install()
 

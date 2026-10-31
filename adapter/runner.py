@@ -31,7 +31,7 @@ def fingerprint(settings):
     def public_connection(dsn):
         values = conninfo_to_dict(dsn)
         return {key: values.get(key) for key in ("host", "hostaddr", "port", "dbname", "user", "service")}
-    value = {"version": 1, "source": public_connection(settings.source_dsn),
+    value = {"version": 2, "source": public_connection(settings.source_dsn),
              "target": public_connection(settings.target_dsn), "tables": [settings.source_table, settings.hourly_table, settings.daily_table],
              "timezone": settings.timezone, "sample_seconds": str(settings.sample_seconds), "profile": settings.profile}
     return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()

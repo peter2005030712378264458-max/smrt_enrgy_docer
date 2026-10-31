@@ -8,6 +8,67 @@ from unittest.mock import patch
 import psycopg
 
 
+def check_exact_metric_weights(q, metadata, settings_class, period_class, fetch_stats):
+    from datetime import datetime, timezone
+    from decimal import Decimal
+    from django.test import override_settings
+    from adapter.model import Settings
+    from adapter.runner import refresh
+    from adapter.tests.test_source_schema import SourceSchemaTests
+    fixture = SourceSchemaTests()
+    fixture.setUp()
+    fixture.reset_source(('ts', 'sensor_name', 'pt', 'u1', 'frequency', 'i1'))
+    with psycopg.connect(fixture.source_dsn) as connection:
+        connection.execute("UPDATE public.review_readings SET pt=NULL,frequency=NULL WHERE ts < '2026-10-15 12:00+03'")
+        connection.execute("UPDATE public.review_readings SET u1=NULL WHERE ts < '2026-10-15 23:00+03'")
+        connection.execute("""INSERT INTO public.review_readings
+            SELECT ts,'Meter A',3000,310,60,2 FROM generate_series(
+            timestamptz '2026-10-16 00:00+03',timestamptz '2026-10-16 23:00+03',interval '1 hour') ts""")
+    fixture.profile['quality']['min_coverage'] = 0
+    config = Settings(fixture.source_dsn, fixture.target_dsn, source_table='public.review_readings',
+                      sample_seconds=Decimal(3600), profile=fixture.profile)
+    refresh(config, start=date(2026, 10, 15), end=date(2026, 10, 17), apply=True,
+            now=datetime(2026, 10, 18, tzinfo=timezone.utc), allowed_sensors={'Meter A'})
+    request = SimpleNamespace(query_params={'from':'2026-10-15T00:00:00+03:00',
+        'to':'2026-10-16T23:59:59+03:00','granularity':'week'})
+    with override_settings(ENERGY_USE_STORED_ENERGY=True), \
+            patch.object(q, '_matching_data_names', return_value=['Meter A']), \
+            patch.object(q, '_with_metadata', return_value=metadata), \
+            patch.object(q, '_device_labels', return_value={}):
+        summary = q.get_summary(request)
+        assert abs(float(summary['avg_voltage_v']) - 306.8) < 1e-9, summary
+        assert abs(float(summary['avg_frequency_hz']) - (50*12+60*24)/36) < 1e-9
+        assert summary['total_energy_kwh'] is None
+        points = [point for point in q.get_timeseries(request)['points'] if point['value'] is not None]
+        assert len(points) == 1 and abs(float(points[0]['value']) - 7/3) < 1e-9, points
+        assert abs(float(q.get_top_devices(request)[0]['avg_power_kw']) - 7/3) < 1e-9
+        rooms = q.get_room_loads(request)
+        assert abs(float(rooms[0]['avg_power_kw']) - 7/3) < 1e-9
+        assert abs(float(q._aggregate_room_load_rows(rooms, 'Other')['avg_power_kw']) - 7/3) < 1e-9
+        request.query_params['metric'] = 'voltage_avg_v'
+        assert abs(float(q.get_timeseries(request)['points'][0]['value']) - 306.8) < 1e-9
+        request.query_params.update(metric='current_avg_a', granularity='day')
+        current = [point for point in q.get_timeseries(request)['points'] if point['value'] is not None]
+        assert [float(point['value']) for point in current] == [1, 2], current
+        assert all(point['timestamp'].astimezone(__import__('zoneinfo').ZoneInfo('Europe/Moscow')).hour == 0 for point in current)
+        # Legacy rows with an unknown count cannot claim a precise mean.
+        with psycopg.connect(fixture.target_dsn) as connection:
+            connection.execute("UPDATE student_schema.electricity_sensor_readings_hourly SET voltage_avg_v_count=NULL WHERE voltage_avg_v IS NOT NULL")
+        assert q.get_summary(request)['avg_voltage_v'] is None
+        request.query_params.update({'from':'2026-10-16T00:00:00+03:00','to':'2026-10-16T23:59:59+03:00'})
+        assert q.get_summary(request)['total_energy_kwh'] == 72
+        with psycopg.connect(fixture.target_dsn) as connection:
+            connection.execute("UPDATE student_schema.electricity_sensor_readings_hourly SET active_power_w_avg_count=NULL WHERE bucket_start >= '2026-10-16 00:00+03'")
+        summary = q.get_summary(request)
+        assert summary['unverified_rows'] == 24 and summary['total_energy_kwh'] is None
+        assert q.get_top_devices(request)[0]['energy_kwh'] is None
+    settings = settings_class(ANALYTICS_POSTGRES_HOST='db', ANALYTICS_POSTGRES_PORT=5432,
+        ANALYTICS_POSTGRES_DB='test_adapter_target', ANALYTICS_POSTGRES_USER='postgres',
+        ANALYTICS_POSTGRES_PASSWORD='adapter-test-only', ENERGY_USE_STORED_ENERGY=True)
+    stats = fetch_stats(period_class(date_from=date(2026,10,16),date_to=date(2026,10,16)), 'period_1', ['Meter A'], settings)
+    assert stats.mean_kw is None and stats.observations == 0 and stats.total_energy_kwh is None
+
+
 def check_missing_measurements(q, metadata, request, settings_class, period_class, fetch_stats):
     from django.test import override_settings
     from adapter.tests.test_source_schema import SourceSchemaTests
@@ -105,7 +166,8 @@ def main():
     assert result.total_energy_kwh is None
     assert result.mean_kw == 2 and result.observations == 24
     check_missing_measurements(q, metadata, request, Settings, PeriodInput, fetch_period_stats)
-    print('Consumer SQL checks passed: summary, timeseries, top devices, room loads, heatmap, analytics, missing columns, real zero, both energy modes.')
+    check_exact_metric_weights(q, metadata, Settings, PeriodInput, fetch_period_stats)
+    print('Consumer SQL checks passed: summary, timeseries, top devices, room loads, heatmap, analytics, missing columns, real zero, both energy modes, exact metric weights and weekly power.')
 
 
 if __name__ == '__main__':

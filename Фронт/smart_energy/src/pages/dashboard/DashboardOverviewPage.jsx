@@ -86,6 +86,12 @@ export default function DashboardOverviewPage() {
         </div>
       </header>
 
+      {summary?.unverified_rows > 0 && <div className="energy-alert" role="status">
+        В выборке есть непроверенная история: {formatNumber(summary.unverified_rows, 0)} агрегатов.
+        Её энергия и средние без достоверного числа измерений не считаются подтверждёнными.
+        Для таких значений показано «—». Остальные доступные данные сохранены.
+      </div>}
+
       <section className="energy-kpi-grid">
         <article className="energy-kpi-card accent-primary">
           <div className="energy-kpi-card__label">Средняя мощность</div>

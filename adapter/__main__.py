@@ -15,7 +15,7 @@ from .runner import RefreshError, refresh
 
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
-    if argv and argv[0] in ('serve', 'init-control'):
+    if argv and argv[0] in ('serve', 'init-control', 'upgrade-aggregates'):
         try:
             if len(argv) != 1:
                 raise ValueError('Эта команда не принимает дополнительных аргументов')
@@ -23,15 +23,23 @@ def main(argv=None):
                 from .store import Store
                 Store(os.environ.get('ENERGY_ADAPTER_CONTROL_DSN') or os.environ['ENERGY_AGG_TARGET_DSN']).install()
                 print('Служебная схема adapter_control установлена; агрегаты не изменялись')
+            elif argv[0] == 'upgrade-aggregates':
+                from .schema import upgrade_aggregates
+                target = os.environ['ENERGY_AGG_TARGET_DSN']
+                added = upgrade_aggregates(Settings('', target))
+                print(f'Счётчики измерений в агрегатах: добавлено {len(added)} столбцов. Старые значения не пересчитаны; источник не изменялся.')
             else:
                 from .service import serve
                 serve()
             return 0
+        except RefreshError as exc:
+            print(f'Обновление остановлено: {exc}', file=sys.stderr)
+            return 1
         except (ValueError, KeyError, OSError, psycopg.Error):
             print('Не удалось запустить адаптер: проверьте переменные окружения, доступ к БД и init-control', file=sys.stderr)
             return 1
     parser = argparse.ArgumentParser(description="Refresh existing hourly/daily energy tables. Default: read-only dry-run.",
-                                     epilog='Service commands: python -m adapter init-control; python -m adapter serve')
+                                     epilog='Service commands: python -m adapter init-control; python -m adapter upgrade-aggregates; python -m adapter serve')
     parser.add_argument("--from", dest="start", type=date.fromisoformat, help="First local date, inclusive")
     parser.add_argument("--to", dest="end", type=date.fromisoformat, help="Boundary date, exclusive; unfinished days are always excluded")
     parser.add_argument("--apply", action="store_true", help="Replace aggregate rows in the selected period; never writes to source")

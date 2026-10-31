@@ -418,10 +418,13 @@ def _aggregate_where_sql(
 
 
 def _weighted_avg_sql(column: str, alias: str = "a") -> str:
-    return (
-        f"SUM({alias}.{column} * {alias}.points_count) "
-        f"/ NULLIF(SUM({alias}.points_count) FILTER (WHERE {alias}.{column} IS NOT NULL), 0)"
-    )
+    value, count = f'{alias}.{column}', f'{alias}.{column}_count'
+    # Legacy rows have unknown counters until an explicit refresh from raw
+    # data. A missing counter must not silently become the total row count.
+    return (f'CASE WHEN COUNT(*) FILTER (WHERE {value} IS NOT NULL) = '
+            f'COUNT(*) FILTER (WHERE {value} IS NOT NULL AND {count} BETWEEN 1 AND {alias}.points_count) '
+            f'THEN SUM({value} * {count}) / '
+            f'NULLIF(SUM({count}) FILTER (WHERE {value} IS NOT NULL), 0) ELSE NULL END')
 
 
 def _summed_metric_sql(column: str, alias: str = "a") -> str:
@@ -432,14 +435,16 @@ def _summed_metric_sql(column: str, alias: str = "a") -> str:
 def _bucket_energy_sql(granularity: str, alias: str = "a") -> str:
     if settings.ENERGY_USE_STORED_ENERGY:
         return _stored_energy_sql(alias)
+    known_counts = f'COUNT(*)=COUNT({alias}.active_power_w_avg_count)'
     if granularity in {"day", "week"}:
-        return f"({_summed_metric_sql('active_power_w_avg', alias)}) * 24.0 / 1000.0"
-    return f"({_summed_metric_sql('active_power_w_avg', alias)}) / 1000.0"
+        return f"CASE WHEN {known_counts} THEN ({_summed_metric_sql('active_power_w_avg', alias)}) * 24.0 / 1000.0 ELSE NULL END"
+    return f"CASE WHEN {known_counts} THEN ({_summed_metric_sql('active_power_w_avg', alias)}) / 1000.0 ELSE NULL END"
 
 
 def _stored_energy_sql(alias):
     # SUM alone would silently omit missing energy and report a partial total.
     return (f'CASE WHEN COUNT(*) = COUNT({alias}.energy_kwh) '
+            f'AND COUNT(*) = COUNT(*) FILTER (WHERE {alias}.active_power_w_avg_count = {alias}.points_count) '
             f'THEN SUM({alias}.energy_kwh) ELSE NULL END')
 
 
@@ -453,8 +458,8 @@ def _aggregate_source_for_bucket(bucket: str, metric: str = "active_power_w_avg"
     if bucket == "day" and metric in DAILY_POWER_METRICS:
         return _daily_table(), "day", "a.bucket_start::timestamp AT TIME ZONE 'Europe/Moscow'"
     if bucket == "week" and metric in DAILY_POWER_METRICS:
-        return _daily_table(), "week", "date_trunc('week', a.bucket_start::timestamp AT TIME ZONE 'Europe/Moscow')"
-    return _hourly_table(), bucket, f"date_trunc('{bucket}', a.bucket_start)"
+        return _daily_table(), "week", "date_trunc('week', a.bucket_start::timestamp AT TIME ZONE 'Europe/Moscow', 'Europe/Moscow')"
+    return _hourly_table(), bucket, f"date_trunc('{bucket}', a.bucket_start, 'Europe/Moscow')"
 
 
 def _device_labels(connection, data_names: list[str]) -> dict[str, dict]:
@@ -521,10 +526,10 @@ def _timeseries_boundary_expr(granularity: str, date_filter: str) -> str:
     if date_filter == "date":
         date_expr = f"LEFT(%s, 10)::date::timestamp AT TIME ZONE 'Europe/Moscow'"
         if granularity == "week":
-            return f"date_trunc('week', {date_expr})"
+            return f"date_trunc('week', {date_expr}, 'Europe/Moscow')"
         return date_expr
 
-    return f"date_trunc('{granularity}', %s::timestamptz)"
+    return f"date_trunc('{granularity}', %s::timestamptz, 'Europe/Moscow')"
 
 
 def _timeseries_bounds_sql(request, granularity: str, date_filter: str) -> tuple[str, str, list[str]]:
@@ -674,9 +679,10 @@ def get_summary(request):
                 )
                 SELECT COALESCE((SELECT SUM(points_count) FROM filtered), 0) AS points,
                        (SELECT COUNT(DISTINCT sensor_name) FROM filtered) AS devices_count,
+                       (SELECT COUNT(*) FROM filtered WHERE active_power_w_avg_count IS NULL) AS unverified_rows,
                        MIN(bucketed.bucket_start) AS date_from,
                        MAX(bucketed.bucket_start) AS date_to,
-                       {_stored_energy_sql('bucketed')} AS total_energy_kwh,
+                       {_summed_metric_sql('energy_kwh', 'bucketed')} AS total_energy_kwh,
                        AVG(bucketed.total_power_kw) AS avg_power_kw,
                        MAX(bucketed.total_power_kw) AS max_power_kw,
                        (SELECT {_weighted_avg_sql("voltage_avg_v", "filtered")} FROM filtered) AS avg_voltage_v,
@@ -709,9 +715,22 @@ def get_timeseries(request):
     date_filter = "date" if granularity in {"day", "week"} and metric in DAILY_POWER_METRICS else "timestamp"
     where_sql, params = _aggregate_where_sql(data_names, request, date_filter=date_filter)
     value_expr = _weighted_avg_sql(metric, "a")
-    if metric.endswith("_power_w_avg"):
-        value_expr = f"{_summed_metric_sql(metric, 'a')} / 1000.0"
-    energy_expr = _bucket_energy_sql(granularity, "a")
+    is_power = metric.endswith("_power_w_avg")
+    energy_expr = _bucket_energy_sql('hour' if source_table == _hourly_table() else granularity, "a")
+    meter_cte = ''
+    bucketed_sql = f'''SELECT {bucket_expr} AS timestamp, {value_expr} AS value,
+        {energy_expr} AS energy_kwh, SUM(a.points_count) AS points
+        FROM {source_table} a {where_sql} GROUP BY {bucket_expr}'''
+    if is_power:
+        # Average across time for each meter, then add meters. Summing seven
+        # daily mean powers would incorrectly multiply weekly power by seven.
+        meter_cte = f'''per_meter AS (SELECT {bucket_expr} AS timestamp, a.sensor_name,
+            ({value_expr}) / 1000.0 AS value, {energy_expr} AS energy_kwh,
+            SUM(a.points_count) AS points FROM {source_table} a {where_sql}
+            GROUP BY {bucket_expr}, a.sensor_name),'''
+        bucketed_sql = f'''SELECT p.timestamp, {_summed_metric_sql('value', 'p')} AS value,
+            {_summed_metric_sql('energy_kwh', 'p')} AS energy_kwh, SUM(p.points) AS points
+            FROM per_meter p GROUP BY p.timestamp'''
     start_expr, end_expr, bounds_params = _timeseries_bounds_sql(request, granularity, date_filter)
     interval = _timeseries_interval(granularity)
 
@@ -719,14 +738,8 @@ def get_timeseries(request):
         rows = rows_to_dicts(
             connection.execute(
                 f"""
-                WITH bucketed AS (
-                    SELECT {bucket_expr} AS timestamp,
-                           {value_expr} AS value,
-                           {energy_expr} AS energy_kwh,
-                           SUM(a.points_count) AS points
-                    FROM {source_table} a
-                    {where_sql}
-                    GROUP BY {bucket_expr}
+                WITH {meter_cte} bucketed AS (
+                    {bucketed_sql}
                 ),
                 bounds AS (
                     SELECT {start_expr} AS start_at,
@@ -932,8 +945,9 @@ def get_device_detail(request, data_name):
 
 def _aggregate_room_load_rows(rows: list[dict], room: str, is_other: bool = False) -> dict:
     points_count = sum(float(row.get("points_count") or 0) for row in rows)
-    weighted_power_sum = (sum(float(row["avg_power_kw"]) * float(row.get("points_count") or 0) for row in rows)
-                          if all(row.get("avg_power_kw") is not None for row in rows) else None)
+    power_count = sum(float(row.get('power_samples_count') or 0) for row in rows)
+    weighted_power_sum = (sum(float(row["avg_power_kw"]) * float(row['power_samples_count']) for row in rows)
+                          if all(row.get("avg_power_kw") is not None and row.get('power_samples_count') is not None for row in rows) else None)
     max_power_values = [float(row["max_power_kw"]) for row in rows if row.get("max_power_kw") is not None]
 
     return {
@@ -942,9 +956,10 @@ def _aggregate_room_load_rows(rows: list[dict], room: str, is_other: bool = Fals
         "is_other": is_other,
         "devices_count": sum(row.get("devices_count") or 0 for row in rows),
         "points_count": points_count,
+        "power_samples_count": power_count,
         "energy_kwh": (sum(float(row['energy_kwh']) for row in rows)
                        if all(row.get('energy_kwh') is not None for row in rows) else None),
-        "avg_power_kw": weighted_power_sum / points_count if points_count and weighted_power_sum is not None else None,
+        "avg_power_kw": weighted_power_sum / power_count if power_count and weighted_power_sum is not None else None,
         "max_power_kw": max(max_power_values) if max_power_values else None,
     }
 
@@ -1007,6 +1022,7 @@ def get_room_loads(request, limit=ROOM_LOADS_LIMIT):
                 f"""
                 SELECT a.sensor_name::text AS data_name,
                        SUM(a.points_count) AS points_count,
+                       SUM(a.active_power_w_avg_count) AS power_samples_count,
                        {_hourly_energy_sql()} AS energy_kwh,
                        {_weighted_avg_sql("active_power_w_avg", "a")} / 1000.0 AS avg_power_kw,
                        MAX(a.active_power_w_max) / 1000.0 AS max_power_kw
@@ -1025,6 +1041,7 @@ def get_room_loads(request, limit=ROOM_LOADS_LIMIT):
         target_rooms = sorted(linked_rooms) if linked_rooms else [unallocated_room]
         room_count = len(target_rooms)
         points_count = float(row.get("points_count") or 0) / room_count
+        power_count = float(row['power_samples_count']) / room_count if row.get('power_samples_count') is not None else 0
         avg_power_kw = float(row['avg_power_kw']) / room_count if row.get('avg_power_kw') is not None else None
         energy_kwh = float(row['energy_kwh']) / room_count if row.get('energy_kwh') is not None else None
         max_power_kw = row.get("max_power_kw")
@@ -1038,6 +1055,7 @@ def get_room_loads(request, limit=ROOM_LOADS_LIMIT):
                     "is_unallocated": room == unallocated_room,
                     "devices": set(),
                     "points_count": 0,
+                    "power_samples_count": 0,
                     "energy_kwh": 0,
                     "weighted_power_sum": 0,
                     "max_power_kw": None,
@@ -1045,6 +1063,7 @@ def get_room_loads(request, limit=ROOM_LOADS_LIMIT):
             )
             room_bucket["devices"].add(row["data_name"])
             room_bucket["points_count"] += points_count
+            room_bucket['power_samples_count'] += power_count
             if energy_kwh is None or room_bucket['energy_kwh'] is None:
                 room_bucket['energy_kwh'] = None
             else:
@@ -1052,7 +1071,7 @@ def get_room_loads(request, limit=ROOM_LOADS_LIMIT):
             if avg_power_kw is None or room_bucket['weighted_power_sum'] is None:
                 room_bucket['weighted_power_sum'] = None
             else:
-                room_bucket["weighted_power_sum"] += avg_power_kw * points_count
+                room_bucket["weighted_power_sum"] += avg_power_kw * power_count
             if max_power_kw is not None:
                 room_bucket["max_power_kw"] = (
                     max_power_kw
@@ -1063,6 +1082,7 @@ def get_room_loads(request, limit=ROOM_LOADS_LIMIT):
     rows = []
     for room_bucket in rooms.values():
         points_count = room_bucket["points_count"]
+        power_count = room_bucket['power_samples_count']
         rows.append(
             {
                 "room": room_bucket["room"],
@@ -1070,9 +1090,10 @@ def get_room_loads(request, limit=ROOM_LOADS_LIMIT):
                 "is_other": False,
                 "devices_count": len(room_bucket["devices"]),
                 "points_count": points_count,
+                "power_samples_count": power_count,
                 "energy_kwh": room_bucket["energy_kwh"],
-                "avg_power_kw": (room_bucket["weighted_power_sum"] / points_count
-                                 if points_count and room_bucket["weighted_power_sum"] is not None else None),
+                "avg_power_kw": (room_bucket["weighted_power_sum"] / power_count
+                                 if power_count and room_bucket["weighted_power_sum"] is not None else None),
                 "max_power_kw": room_bucket["max_power_kw"],
             }
         )

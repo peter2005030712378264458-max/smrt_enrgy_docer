@@ -219,12 +219,16 @@ def source_cte(profile, column_types):
         elif field == 'sensor_name':
             expression = sql.SQL('{}::text').format(sql.Identifier(column))
         elif column and column in column_types:
+            identifier = sql.Identifier(column)
+            factor = sql.Literal(Decimal(str(profile.get('scales', {}).get(field, 1))))
+            expression = sql.SQL('{}::numeric * {}').format(identifier, factor)
             # PostgreSQL 13 cannot cast float Infinity to numeric. Reject it
             # before the cast, rather than letting one bad measurement abort
-            # the other available metrics.
-            expression = sql.SQL("CASE WHEN {}::text IN ('NaN','Infinity','-Infinity') THEN NULL ELSE {}::numeric * {} END").format(
-                sql.Identifier(column), sql.Identifier(column),
-                sql.Literal(Decimal(str(profile.get('scales', {}).get(field, 1)))))
+            # the other available metrics. Numeric/integer inputs are cleaned
+            # once downstream, avoiding duplicate casts across every metric.
+            if column_types[column] in ('float4', 'float8'):
+                expression = sql.SQL("CASE WHEN {}::text IN ('NaN','Infinity','-Infinity') THEN NULL ELSE {} END").format(
+                    identifier, expression)
         else:
             expression = sql.SQL('NULL::numeric')
         expressions.append(sql.SQL('{} AS {}').format(expression, sql.Identifier(field)))

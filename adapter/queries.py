@@ -43,10 +43,12 @@ def hourly_query(source_table, normalized_source=None):
             sql.SQL("SUM({}) FILTER (WHERE {}) AS {}").format(identifier, valid, sql.Identifier(metric + "_sum")),
             sql.SQL("COUNT({}) FILTER (WHERE {}) AS {}").format(identifier, valid, sql.Identifier(metric + "_count")),
         ))
+    # Compute each row's metrics once for SUM/COUNT/MAX. PostgreSQL 13 would
+    # otherwise inline and repeat the same normalization for each aggregate.
     return sql.SQL("""
         WITH source_input AS ({source_rows}), source_rows AS (
             SELECT ts, sensor_name, {finite_columns} FROM source_input
-        ), normalized AS (
+        ), normalized AS MATERIALIZED (
             SELECT ts, sensor_name::text AS sensor_name, {normalized}
             FROM source_rows
             WHERE ts >= %(start)s AND ts < %(end)s AND sensor_name IS NOT NULL

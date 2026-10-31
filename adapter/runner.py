@@ -221,6 +221,9 @@ def refresh(settings: Settings, *, start: date | None = None, end: date | None =
     with psycopg.connect(settings.source_dsn, autocommit=True, row_factory=dict_row, connect_timeout=8) as source, \
             psycopg.connect(settings.target_dsn, autocommit=True, row_factory=dict_row, connect_timeout=8) as target:
         configure_session(source, settings, readonly=True)
+        # These generated expressions are cheaper to interpret than to JIT
+        # compile on large days; this changes only the reader's own session.
+        source.execute('SET jit=off')
         configure_session(target, settings, readonly=not apply)
         source_identity = source.execute("SELECT current_database() AS name").fetchone()["name"]
         target_identity = target.execute("SELECT current_database() AS name").fetchone()["name"]

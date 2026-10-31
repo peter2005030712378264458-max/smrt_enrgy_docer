@@ -46,3 +46,35 @@ test('gaps stay in the timeline and do not dilute averages or become energy', ()
   assert.equal(buildPowerSeries(points).length, 3)
   assert.equal(buildSummaryFromTimeseries(points, null).total_energy_kwh, null)
 })
+
+test('available meter power remains visible when the full total is unknown', () => {
+  const points = [{ timestamp: at(0), value: null, available_value: 12, available_meters: 47, total_meters: 49, energy_kwh: null }]
+  const line = buildPowerSeries(points)[0]
+  assert.equal(line.kw, 12)
+  assert.equal(line.isPartial, true)
+  const stats = buildPowerStats(points, { avg_power_kw: null })
+  assert.equal(stats.avgKw, 12)
+  assert.deepEqual(stats.coverage, { isPartial: true, minAvailableMeters: 47, maxAvailableMeters: 47, totalMeters: 49 })
+  assert.equal(buildSummaryFromTimeseries(points, null).total_energy_kwh, null)
+})
+
+test('partial measured zero stays zero and a fully missing hour stays a gap', () => {
+  const points = [
+    { timestamp: at(0), value: null, available_value: 0, available_meters: 1, total_meters: 2 },
+    { timestamp: at(1), value: null, available_value: null, available_meters: 0, total_meters: 2 },
+  ]
+  assert.deepEqual(buildPowerSeries(points).map(point => point.kw), [0, null])
+  const stats = buildPowerStats(points, null)
+  assert.equal(stats.avgKw, 0)
+  assert.equal(stats.currentKw, null)
+  assert.equal(stats.coverage.minAvailableMeters, 0)
+  assert.equal(stats.coverage.maxAvailableMeters, 1)
+})
+
+test('complete power is not marked partial and unknown legacy power stays unknown', () => {
+  const complete = [{ timestamp: at(0), value: 0, available_value: 0, available_meters: 2, total_meters: 2 }]
+  assert.equal(buildPowerStats(complete, null).coverage.isPartial, false)
+  const legacy = [{ timestamp: at(0), value: null, available_value: null, available_meters: 0, total_meters: 2 }]
+  assert.equal(buildPowerSeries(legacy)[0].kw, null)
+  assert.equal(buildPowerStats(legacy, null).avgKw, null)
+})

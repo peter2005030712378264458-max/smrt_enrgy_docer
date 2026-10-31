@@ -29,20 +29,25 @@ export default function PowerTrendChart({ points, granularity }) {
   const values = buildPowerSeries(points)
   const known = values.filter(point => point.kw !== null)
   const average = known.length ? known.reduce((sum, point) => sum + point.kw, 0) / known.length : null
-  const data = values.map(point => ({ timestamp: point.timestamp, actual: point.kw, average: point.kw === null ? null : average }))
+  const partial = values.some(point => point.isPartial)
+  const data = values.map(point => ({ ...point, actual: point.kw, average: point.kw === null ? null : average }))
 
   if (!known.length) return <div className="energy-chart-empty" role="status">Нет данных активной мощности для выбранных фильтров</div>
 
   return (
-    <div className="energy-rechart" role="img" aria-label="График фактической и средней активной мощности в киловаттах, время московское">
+    <div className="energy-rechart" role="img" aria-label="График доступной и средней активной мощности в киловаттах, время московское">
       <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={280}>
         <LineChart data={data} margin={{ top: 16, right: 20, bottom: 12, left: 6 }}>
           <CartesianGrid stroke="var(--chart-grid)" vertical={false} />
           <XAxis dataKey="timestamp" tickFormatter={(value) => axisLabel(value, granularity)} stroke="var(--chart-axis)" minTickGap={28} />
           <YAxis stroke="var(--chart-axis)" unit=" кВт" width={72} />
-          <Tooltip labelFormatter={tooltipLabel} formatter={(value, name) => [`${Number(value).toLocaleString('ru-RU', { maximumFractionDigits: 2 })} кВт`, name]} contentStyle={{ background: 'var(--surface-elevated)', border: '1px solid var(--border)', borderRadius: 12 }} />
+          <Tooltip labelFormatter={(value, items) => {
+            const point = items?.[0]?.payload
+            const coverage = point?.totalMeters > 0 ? ` · счётчиков ${point.availableMeters} из ${point.totalMeters}` : ''
+            return `${tooltipLabel(value)}${coverage}`
+          }} formatter={(value, name) => [`${Number(value).toLocaleString('ru-RU', { maximumFractionDigits: 2 })} кВт`, name]} contentStyle={{ background: 'var(--surface-elevated)', border: '1px solid var(--border)', borderRadius: 12 }} />
           <Legend />
-          <Line name="Факт" type="monotone" dataKey="actual" stroke="var(--chart-primary)" strokeWidth={3} dot={false} activeDot={{ r: 5 }} />
+          <Line name={partial ? 'Доступная мощность' : 'Факт'} type="monotone" dataKey="actual" stroke="var(--chart-primary)" strokeWidth={3} dot={false} activeDot={{ r: 5 }} />
           <Line name="Среднее" type="monotone" dataKey="average" stroke="var(--chart-secondary)" strokeWidth={2} strokeDasharray="7 7" dot={false} />
         </LineChart>
       </ResponsiveContainer>

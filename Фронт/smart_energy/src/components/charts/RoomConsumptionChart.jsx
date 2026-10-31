@@ -6,7 +6,7 @@ export default function RoomConsumptionChart({ rooms }) {
     .map((room) => ({ room: String(room.room || 'Без названия'), energy: Number(room.energy_kwh) }))
     .filter((room) => Number.isFinite(room.energy))
 
-  if (!data.length) return <div className="energy-chart-empty" role="status">Нет агрегированных данных за выбранный период</div>
+  if (!data.length) return <div className="energy-chart-empty" role="status">Нет подтверждённых значений энергии по помещениям за выбранный период</div>
 
   return (
     <div className="energy-room-chart" role="img" aria-label="Столбчатая диаграмма потребления энергии по помещениям в киловатт-часах">

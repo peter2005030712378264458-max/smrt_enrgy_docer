@@ -193,17 +193,38 @@ function knownNumber(value) {
 
 export function buildPowerSeries(points) {
   return points.filter(point => point.timestamp && Number.isFinite(Date.parse(point.timestamp)))
-    .map(point => ({ timestamp: point.timestamp, kw: knownNumber(point.value) }))
+    .map(point => {
+      const fullValue = knownNumber(point.value)
+      const availableValue = knownNumber(point.available_value)
+      const availableMeters = knownNumber(point.available_meters)
+      const totalMeters = knownNumber(point.total_meters)
+      return {
+        timestamp: point.timestamp,
+        kw: fullValue ?? availableValue,
+        availableMeters,
+        totalMeters,
+        isPartial: (availableMeters !== null && totalMeters !== null && availableMeters < totalMeters)
+          || (fullValue === null && availableValue !== null),
+      }
+    })
 }
 
 export function buildPowerStats(points, summary) {
   const timeline = buildPowerSeries(points)
   const series = timeline.filter(point => point.kw !== null)
+  const coveragePoints = timeline.filter(point => point.availableMeters !== null && point.totalMeters > 0)
+  const coverage = {
+    isPartial: timeline.some(point => point.isPartial),
+    minAvailableMeters: coveragePoints.length ? Math.min(...coveragePoints.map(point => point.availableMeters)) : null,
+    maxAvailableMeters: coveragePoints.length ? Math.max(...coveragePoints.map(point => point.availableMeters)) : null,
+    totalMeters: coveragePoints.length ? Math.max(...coveragePoints.map(point => point.totalMeters)) : null,
+  }
 
   if (!series.length) {
     const fallbackMax = knownNumber(summary?.max_power_kw)
     const fallbackAvg = knownNumber(summary?.avg_power_kw)
     return {
+      coverage,
       currentKw: knownNumber(summary?.current_power_kw),
       maxKw: fallbackMax,
       avgKw: fallbackAvg,
@@ -221,6 +242,7 @@ export function buildPowerStats(points, summary) {
   const avgKw = series.reduce((sum, point) => sum + point.kw, 0) / series.length
 
   return {
+    coverage,
     currentKw: current.kw,
     maxKw: peak.kw,
     avgKw,

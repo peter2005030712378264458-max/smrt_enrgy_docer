@@ -90,6 +90,8 @@ def check_missing_measurements(q, metadata, request, settings_class, period_clas
             assert summary['avg_voltage_v'] == 230 and summary['avg_frequency_hz'] == 50
             points = q.get_timeseries(request)['points']
             assert points and all(point['value'] is None and point['energy_kwh'] is None for point in points)
+            assert all(point['available_value'] is None and point['available_meters'] == 0
+                       and point['total_meters'] == 1 for point in points)
             assert q.get_top_devices(request)[0]['energy_kwh'] is None
             assert q.get_room_loads(request)[0]['energy_kwh'] is None
             assert q.get_room_loads(request)[0]['avg_power_kw'] is None
@@ -112,7 +114,9 @@ def check_missing_measurements(q, metadata, request, settings_class, period_clas
     for stored in (False, True):
         with override_settings(ENERGY_USE_STORED_ENERGY=stored), patch.object(q, '_matching_data_names', return_value=['Meter A']):
             assert q.get_summary(request)['total_energy_kwh'] == 0
-            assert all(point['value'] == 0 and point['energy_kwh'] == 0 for point in q.get_timeseries(request)['points'])
+            assert all(point['value'] == 0 and point['available_value'] == 0 and point['energy_kwh'] == 0
+                       and point['available_meters'] == point['total_meters'] == 1
+                       for point in q.get_timeseries(request)['points'])
 
     # An unknown meter is not silently omitted from total power or the z-test.
     fixture.fixture.setUp()
@@ -123,6 +127,27 @@ def check_missing_measurements(q, metadata, request, settings_class, period_clas
             assert q.get_summary(request)['current_power_kw'] is None
             assert q.get_summary(request)['total_energy_kwh'] is None
             assert all(point['value'] is None for point in q.get_timeseries(request)['points'])
+            for granularity in ('hour', 'day', 'week'):
+                request.query_params['granularity'] = granularity
+                points = q.get_timeseries(request)['points']
+                expected = [1] * 12 + [3] * 12 if granularity == 'hour' else [2]
+                assert [point['available_value'] for point in points] == expected
+                assert points and all(point['value'] is None
+                                      and point['available_meters'] == 1 and point['total_meters'] == 2
+                                      and point['energy_kwh'] is None for point in points), points
+            request.query_params['granularity'] = 'hour'
+
+    # A meter with no aggregate row in an hour still belongs to the range's
+    # meter scope. Known measurements survive, but the full total stays NULL.
+    with psycopg.connect(fixture.target_dsn) as connection:
+        connection.execute("DELETE FROM student_schema.electricity_sensor_readings_hourly WHERE sensor_name='Meter B' AND bucket_start='2026-10-15 00:00+03'")
+        connection.execute("DELETE FROM student_schema.electricity_sensor_readings_hourly WHERE sensor_name='Meter A' AND bucket_start='2026-10-15 01:00+03'")
+    with override_settings(ENERGY_USE_STORED_ENERGY=True), patch.object(q, '_matching_data_names', return_value=['Meter A', 'Meter B']):
+        points = q.get_timeseries(request)['points']
+        assert points[0]['value'] is None and points[0]['available_value'] == 1
+        assert points[0]['available_meters'] == 1 and points[0]['total_meters'] == 2
+        assert points[1]['value'] is None and points[1]['available_value'] is None
+        assert points[1]['available_meters'] == 0 and points[1]['total_meters'] == 2
 
 
 def main():

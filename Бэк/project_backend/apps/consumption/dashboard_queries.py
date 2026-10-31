@@ -721,6 +721,8 @@ def get_timeseries(request):
     is_power = metric.endswith("_power_w_avg")
     energy_expr = _bucket_energy_sql('hour' if source_table == _hourly_table() else granularity, "a")
     meter_cte = ''
+    coverage_columns = ''
+    coverage_join = ''
     bucketed_sql = f'''SELECT {bucket_expr} AS timestamp, {value_expr} AS value,
         {energy_expr} AS energy_kwh, SUM(a.points_count) AS points
         FROM {source_table} a {where_sql} GROUP BY {bucket_expr}'''
@@ -730,10 +732,22 @@ def get_timeseries(request):
         meter_cte = f'''per_meter AS (SELECT {bucket_expr} AS timestamp, a.sensor_name,
             ({value_expr}) / 1000.0 AS value, {energy_expr} AS energy_kwh,
             SUM(a.points_count) AS points FROM {source_table} a {where_sql}
-            GROUP BY {bucket_expr}, a.sensor_name),'''
-        bucketed_sql = f'''SELECT p.timestamp, {_summed_metric_sql('value', 'p')} AS value,
-            {_summed_metric_sql('energy_kwh', 'p')} AS energy_kwh, SUM(p.points) AS points
-            FROM per_meter p GROUP BY p.timestamp'''
+            GROUP BY {bucket_expr}, a.sensor_name),
+            meter_scope AS (SELECT COUNT(DISTINCT sensor_name) AS total_meters FROM per_meter),'''
+        # Keep the full total unknown when a meter has no value, while also
+        # returning the measured subset explicitly for the dashboard. The
+        # scope spans the selected range so a missing hourly row is visible.
+        bucketed_sql = '''SELECT p.timestamp,
+            CASE WHEN COUNT(p.value)=scope.total_meters THEN SUM(p.value) END AS value,
+            SUM(p.value) AS available_value, COUNT(p.value) AS available_meters,
+            CASE WHEN COUNT(p.energy_kwh)=scope.total_meters THEN SUM(p.energy_kwh) END AS energy_kwh,
+            SUM(p.points) AS points
+            FROM per_meter p CROSS JOIN meter_scope scope
+            GROUP BY p.timestamp, scope.total_meters'''
+        coverage_columns = ''', bucketed.available_value,
+                       COALESCE(bucketed.available_meters, 0) AS available_meters,
+                       meter_scope.total_meters'''
+        coverage_join = 'CROSS JOIN meter_scope'
     start_expr, end_expr, bounds_params = _timeseries_bounds_sql(request, granularity, date_filter)
     interval = _timeseries_interval(granularity)
 
@@ -759,8 +773,9 @@ def get_timeseries(request):
                 SELECT time_buckets.timestamp,
                        bucketed.value AS value,
                        bucketed.energy_kwh AS energy_kwh,
-                       COALESCE(bucketed.points, 0) AS points
+                       COALESCE(bucketed.points, 0) AS points{coverage_columns}
                 FROM time_buckets
+                {coverage_join}
                 LEFT JOIN bucketed ON bucketed.timestamp = time_buckets.timestamp
                 ORDER BY time_buckets.timestamp
                 """,

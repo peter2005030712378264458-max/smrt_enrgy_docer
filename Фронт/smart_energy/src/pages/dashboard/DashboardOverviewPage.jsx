@@ -37,6 +37,13 @@ export default function DashboardOverviewPage() {
     setSelectedDate,
   } = useOutletContext()
   const rankedDevices = topDevices.filter(device => device.energy_kwh !== null && device.energy_kwh !== undefined)
+  const coverage = powerStats.coverage
+  const availableMetersLabel = coverage.minAvailableMeters === coverage.maxAvailableMeters
+    ? formatNumber(coverage.minAvailableMeters, 0)
+    : `${formatNumber(coverage.minAvailableMeters, 0)}–${formatNumber(coverage.maxAvailableMeters, 0)}`
+  const powerScopeLabel = coverage.isPartial && coverage.totalMeters !== null
+    ? `Учтено счётчиков: ${availableMetersLabel} из ${formatNumber(coverage.totalMeters, 0)}`
+    : selectedDeviceLabel
 
   return (
     <section className="energy-view active">
@@ -92,19 +99,27 @@ export default function DashboardOverviewPage() {
         Для таких значений показано «—». Остальные доступные данные сохранены.
       </div>}
 
+      {coverage.isPartial && <div className="energy-alert" role="status">
+        Показана мощность по доступным данным. {powerScopeLabel}.
+        {' '}Полнота может меняться по времени; число учтённых счётчиков видно в подсказке графика.
+        Полная мощность всех счётчиков неизвестна.
+      </div>}
+
       <section className="energy-kpi-grid">
         <article className="energy-kpi-card accent-primary">
-          <div className="energy-kpi-card__label">Средняя мощность</div>
+          <div className="energy-kpi-card__label">{coverage.isPartial ? 'Средняя доступная мощность' : 'Средняя мощность'}</div>
           <div className="energy-kpi-card__value">{formatNumber(powerStats.avgKw)} <span>кВт</span></div>
-          <div className="energy-kpi-card__meta">{selectedDeviceLabel}</div>
+          <div className="energy-kpi-card__meta">{powerScopeLabel}</div>
         </article>
         <article className="energy-kpi-card">
           <div className="energy-kpi-card__label">Энергия за период</div>
           <div className="energy-kpi-card__value">{formatNumber(summary?.total_energy_kwh, 0)} <span>кВт·ч</span></div>
-          <div className="energy-kpi-card__meta">{formatDateTime(summary?.date_from)} - {formatDateTime(summary?.date_to)}</div>
+          <div className="energy-kpi-card__meta">{summary?.points > 0 && summary?.total_energy_kwh == null
+            ? 'Недостаточно данных для полной энергии за период'
+            : `${formatDateTime(summary?.date_from)} - ${formatDateTime(summary?.date_to)}`}</div>
         </article>
         <article className="energy-kpi-card accent-warning">
-          <div className="energy-kpi-card__label">Максимальная мощность</div>
+          <div className="energy-kpi-card__label">{coverage.isPartial ? 'Максимальная доступная мощность' : 'Максимальная мощность'}</div>
           <div className="energy-kpi-card__value">{formatNumber(powerStats.maxKw)} <span>кВт</span></div>
           <div className="energy-kpi-card__meta">максимум за выбранный период</div>
         </article>
@@ -117,7 +132,9 @@ export default function DashboardOverviewPage() {
 
       <section className="energy-content-grid energy-content-grid--main">
         <article className="energy-panel energy-chart-panel">
-          <div className="energy-panel__head"><div><h2>Динамика активной мощности</h2><p>Почасовая, посуточная или понедельная агрегация по выбранному периоду</p></div></div>
+          <div className="energy-panel__head"><div><h2>Динамика активной мощности</h2><p>{coverage.isPartial
+            ? 'Сумма мощности доступных счётчиков; отсутствующие данные показаны как пропуски'
+            : 'Почасовая, посуточная или понедельная агрегация по выбранному периоду'}</p></div></div>
           <div className="energy-chart-wrap"><PowerTrendChart points={timeseries} granularity={queryParams.granularity} /></div>
         </article>
         <article className="energy-panel">
@@ -128,7 +145,7 @@ export default function DashboardOverviewPage() {
                 <div className="energy-event-item__time">#{index + 1}</div>
                 <div className="energy-event-item__body"><div className="energy-event-item__title">{getDeviceLabel(device)}</div><div className="energy-event-item__text">{formatNumber(device.energy_kwh, 0)} кВт·ч · максимум {formatNumber(device.max_power_kw)} кВт</div></div>
               </article>
-            )) : <div className="energy-list-empty" role="status">Нет данных о счётчиках за выбранный период</div>}
+            )) : <div className="energy-list-empty" role="status">Нет подтверждённых значений энергии за выбранный период</div>}
           </div>
         </article>
       </section>
@@ -143,7 +160,7 @@ export default function DashboardOverviewPage() {
         <article className="energy-panel">
           <div className="energy-panel__head compact"><div><h2>Краткая сводка</h2><p>Параметры выбранной выборки из базы</p></div></div>
           <div className="energy-summary-list">
-            <SummaryItem label="Средняя мощность периода" value={`${formatNumber(powerStats.avgKw)} кВт`} note="среднее значение агрегированной линии" />
+            <SummaryItem label="Средняя мощность периода" value={`${formatNumber(powerStats.avgKw)} кВт`} note={coverage.isPartial ? powerScopeLabel : 'среднее значение агрегированной линии'} />
             <SummaryItem label="Минимальная мощность" value={`${formatNumber(powerStats.minKw)} кВт`} note="минимум в выбранном периоде" />
             <SummaryItem label="Максимальная мощность" value={`${formatNumber(powerStats.maxKw)} кВт`} note="максимум в выбранном периоде" />
             <SummaryItem label="Коэффициент загрузки" value={formatPercent(powerStats.loadFactor)} note="средняя мощность / максимум периода" />

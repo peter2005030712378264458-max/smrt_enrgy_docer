@@ -185,28 +185,37 @@ export function getRoomLabel(room) {
   return textOrFallback(room?.room)
 }
 
+function knownNumber(value) {
+  if (value === null || value === undefined || value === '') return null
+  const number = Number(value)
+  return Number.isFinite(number) ? number : null
+}
+
+export function buildPowerSeries(points) {
+  return points.filter(point => point.timestamp && Number.isFinite(Date.parse(point.timestamp)))
+    .map(point => ({ timestamp: point.timestamp, kw: knownNumber(point.value) }))
+}
+
 export function buildPowerStats(points, summary) {
-  const series = points
-    .map((point) => ({ timestamp: point.timestamp, kw: Number(point.value ?? 0) }))
-    .filter((point) => Number.isFinite(point.kw))
+  const timeline = buildPowerSeries(points)
+  const series = timeline.filter(point => point.kw !== null)
 
   if (!series.length) {
-    const hasSummary = summary !== null
-    const fallbackMax = Number(summary?.max_power_kw ?? 0)
-    const fallbackAvg = Number(summary?.avg_power_kw ?? 0)
+    const fallbackMax = knownNumber(summary?.max_power_kw)
+    const fallbackAvg = knownNumber(summary?.avg_power_kw)
     return {
-      currentKw: hasSummary ? Number(summary?.current_power_kw ?? 0) : null,
-      maxKw: hasSummary ? fallbackMax : null,
-      avgKw: hasSummary ? fallbackAvg : null,
-      minKw: hasSummary ? 0 : null,
-      loadFactor: hasSummary ? (fallbackMax > 0 ? (fallbackAvg / fallbackMax) * 100 : 0) : null,
-      pointsCount: hasSummary ? 0 : null,
-      lastTimestamp: summary?.date_to ?? null,
-      peakTimestamp: summary?.date_to ?? null,
+      currentKw: knownNumber(summary?.current_power_kw),
+      maxKw: fallbackMax,
+      avgKw: fallbackAvg,
+      minKw: null,
+      loadFactor: fallbackMax !== null && fallbackAvg !== null ? (fallbackMax > 0 ? (fallbackAvg / fallbackMax) * 100 : 0) : null,
+      pointsCount: timeline.length || knownNumber(summary?.points),
+      lastTimestamp: timeline.at(-1)?.timestamp ?? summary?.date_to ?? null,
+      peakTimestamp: null,
     }
   }
 
-  const current = series.at(-1)
+  const current = timeline.at(-1)
   const peak = series.reduce((best, point) => (point.kw > best.kw ? point : best), series[0])
   const min = series.reduce((best, point) => (point.kw < best.kw ? point : best), series[0])
   const avgKw = series.reduce((sum, point) => sum + point.kw, 0) / series.length
@@ -217,32 +226,32 @@ export function buildPowerStats(points, summary) {
     avgKw,
     minKw: min.kw,
     loadFactor: peak.kw > 0 ? (avgKw / peak.kw) * 100 : 0,
-    pointsCount: series.length,
+    pointsCount: timeline.length,
     lastTimestamp: current.timestamp,
     peakTimestamp: peak.timestamp,
   }
 }
 
-export function buildSummaryFromTimeseries(points, filters, queryParams) {
-  const values = points.map((point) => Number(point.value ?? 0)).filter(Number.isFinite)
-  const totalEnergy = points.length && points.every((point) => point.energy_kwh !== null && point.energy_kwh !== undefined) ? points.reduce((total, point) => {
-    const energy = Number(point.energy_kwh ?? 0)
-    return Number.isFinite(energy) ? total + energy : total
-  }, 0) : null
+export function buildSummaryFromTimeseries(points, filters) {
+  const timeline = buildPowerSeries(points)
+  const values = timeline.map(point => point.kw).filter(value => value !== null)
+  const energyValues = points.map(point => knownNumber(point.energy_kwh))
+  const totalEnergy = energyValues.length && energyValues.every(value => value !== null)
+    ? energyValues.reduce((total, value) => total + value, 0) : null
 
   if (!values.length) {
     return {
-      points: 0,
-      devices_count: 0,
-      date_from: queryParams.from ?? filters?.date_range?.date_from ?? null,
-      date_to: queryParams.to ?? filters?.date_range?.date_to ?? null,
+      points: points.length,
+      devices_count: filters?.devices?.length ?? 0,
+      date_from: timeline[0]?.timestamp ?? null,
+      date_to: timeline.at(-1)?.timestamp ?? null,
       total_energy_kwh: null,
-      avg_power_kw: 0,
-      max_power_kw: 0,
-      avg_voltage_v: 0,
-      avg_frequency_hz: 0,
-      current_power_kw: 0,
-      timestamp_iso: queryParams.to ?? filters?.date_range?.date_to ?? null,
+      avg_power_kw: null,
+      max_power_kw: null,
+      avg_voltage_v: null,
+      avg_frequency_hz: null,
+      current_power_kw: null,
+      timestamp_iso: timeline.at(-1)?.timestamp ?? null,
     }
   }
 
@@ -250,14 +259,14 @@ export function buildSummaryFromTimeseries(points, filters, queryParams) {
   return {
     points: points.length,
     devices_count: filters?.devices?.length ?? 0,
-    date_from: points[0]?.timestamp ?? queryParams.from ?? filters?.date_range?.date_from ?? null,
-    date_to: points.at(-1)?.timestamp ?? queryParams.to ?? filters?.date_range?.date_to ?? null,
+    date_from: timeline[0]?.timestamp ?? null,
+    date_to: timeline.at(-1)?.timestamp ?? null,
     total_energy_kwh: totalEnergy,
     avg_power_kw: sum / values.length,
     max_power_kw: Math.max(...values),
-    avg_voltage_v: 0,
-    avg_frequency_hz: 0,
-    current_power_kw: values.at(-1),
-    timestamp_iso: points.at(-1)?.timestamp ?? queryParams.to ?? filters?.date_range?.date_to ?? null,
+    avg_voltage_v: null,
+    avg_frequency_hz: null,
+    current_power_kw: timeline.at(-1)?.kw ?? null,
+    timestamp_iso: timeline.at(-1)?.timestamp ?? null,
   }
 }

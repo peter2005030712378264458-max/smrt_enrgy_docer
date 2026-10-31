@@ -425,15 +425,16 @@ def _weighted_avg_sql(column: str, alias: str = "a") -> str:
 
 
 def _summed_metric_sql(column: str, alias: str = "a") -> str:
-    return f"SUM({alias}.{column})"
+    return (f"CASE WHEN COUNT(*)=COUNT({alias}.{column}) "
+            f"THEN SUM({alias}.{column}) ELSE NULL END")
 
 
 def _bucket_energy_sql(granularity: str, alias: str = "a") -> str:
     if settings.ENERGY_USE_STORED_ENERGY:
         return _stored_energy_sql(alias)
     if granularity in {"day", "week"}:
-        return f"SUM({alias}.active_power_w_avg * 24.0) / 1000.0"
-    return f"SUM({alias}.active_power_w_avg) / 1000.0"
+        return f"({_summed_metric_sql('active_power_w_avg', alias)}) * 24.0 / 1000.0"
+    return f"({_summed_metric_sql('active_power_w_avg', alias)}) / 1000.0"
 
 
 def _stored_energy_sql(alias):
@@ -661,7 +662,7 @@ def get_summary(request):
                 ),
                 bucketed AS (
                     SELECT bucket_start,
-                           SUM(active_power_w_avg) / 1000.0 AS total_power_kw,
+                           ({_summed_metric_sql('active_power_w_avg', 'filtered')}) / 1000.0 AS total_power_kw,
                            {_hourly_energy_sql('filtered')} AS energy_kwh,
                            SUM(points_count) AS points_count
                     FROM filtered
@@ -681,7 +682,7 @@ def get_summary(request):
                        (SELECT {_weighted_avg_sql("voltage_avg_v", "filtered")} FROM filtered) AS avg_voltage_v,
                        (SELECT {_weighted_avg_sql("frequency_hz_avg", "filtered")} FROM filtered) AS avg_frequency_hz,
                        (
-                           SELECT SUM(current_rows.active_power_w_avg) / 1000.0
+                           SELECT ({_summed_metric_sql('active_power_w_avg', 'current_rows')}) / 1000.0
                            FROM filtered current_rows
                            JOIN latest ON latest.bucket_start = current_rows.bucket_start
                        ) AS current_power_kw,
@@ -740,8 +741,8 @@ def get_timeseries(request):
                       AND start_at <= end_at
                 )
                 SELECT time_buckets.timestamp,
-                       COALESCE(bucketed.value, 0) AS value,
-                       {('bucketed.energy_kwh' if settings.ENERGY_USE_STORED_ENERGY else 'COALESCE(bucketed.energy_kwh, 0)')} AS energy_kwh,
+                       bucketed.value AS value,
+                       bucketed.energy_kwh AS energy_kwh,
                        COALESCE(bucketed.points, 0) AS points
                 FROM time_buckets
                 LEFT JOIN bucketed ON bucketed.timestamp = time_buckets.timestamp
@@ -931,7 +932,8 @@ def get_device_detail(request, data_name):
 
 def _aggregate_room_load_rows(rows: list[dict], room: str, is_other: bool = False) -> dict:
     points_count = sum(float(row.get("points_count") or 0) for row in rows)
-    weighted_power_sum = sum(float(row.get("avg_power_kw") or 0) * float(row.get("points_count") or 0) for row in rows)
+    weighted_power_sum = (sum(float(row["avg_power_kw"]) * float(row.get("points_count") or 0) for row in rows)
+                          if all(row.get("avg_power_kw") is not None for row in rows) else None)
     max_power_values = [float(row["max_power_kw"]) for row in rows if row.get("max_power_kw") is not None]
 
     return {
@@ -942,7 +944,7 @@ def _aggregate_room_load_rows(rows: list[dict], room: str, is_other: bool = Fals
         "points_count": points_count,
         "energy_kwh": (sum(float(row['energy_kwh']) for row in rows)
                        if all(row.get('energy_kwh') is not None for row in rows) else None),
-        "avg_power_kw": weighted_power_sum / points_count if points_count else None,
+        "avg_power_kw": weighted_power_sum / points_count if points_count and weighted_power_sum is not None else None,
         "max_power_kw": max(max_power_values) if max_power_values else None,
     }
 
@@ -1023,7 +1025,7 @@ def get_room_loads(request, limit=ROOM_LOADS_LIMIT):
         target_rooms = sorted(linked_rooms) if linked_rooms else [unallocated_room]
         room_count = len(target_rooms)
         points_count = float(row.get("points_count") or 0) / room_count
-        avg_power_kw = float(row.get("avg_power_kw") or 0) / room_count
+        avg_power_kw = float(row['avg_power_kw']) / room_count if row.get('avg_power_kw') is not None else None
         energy_kwh = float(row['energy_kwh']) / room_count if row.get('energy_kwh') is not None else None
         max_power_kw = row.get("max_power_kw")
         max_power_kw = float(max_power_kw) / room_count if max_power_kw is not None else None
@@ -1047,7 +1049,10 @@ def get_room_loads(request, limit=ROOM_LOADS_LIMIT):
                 room_bucket['energy_kwh'] = None
             else:
                 room_bucket['energy_kwh'] += energy_kwh
-            room_bucket["weighted_power_sum"] += avg_power_kw * points_count
+            if avg_power_kw is None or room_bucket['weighted_power_sum'] is None:
+                room_bucket['weighted_power_sum'] = None
+            else:
+                room_bucket["weighted_power_sum"] += avg_power_kw * points_count
             if max_power_kw is not None:
                 room_bucket["max_power_kw"] = (
                     max_power_kw
@@ -1066,7 +1071,8 @@ def get_room_loads(request, limit=ROOM_LOADS_LIMIT):
                 "devices_count": len(room_bucket["devices"]),
                 "points_count": points_count,
                 "energy_kwh": room_bucket["energy_kwh"],
-                "avg_power_kw": room_bucket["weighted_power_sum"] / points_count if points_count else None,
+                "avg_power_kw": (room_bucket["weighted_power_sum"] / points_count
+                                 if points_count and room_bucket["weighted_power_sum"] is not None else None),
                 "max_power_kw": room_bucket["max_power_kw"],
             }
         )

@@ -52,10 +52,9 @@ class ModelTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             validate_profile({**PROFILE, 'confirmed': False})
 
-    def test_power_required_and_optional_fields_can_be_missing(self):
+    def test_measurements_can_be_missing_but_time_and_meter_remain_required(self):
         profile = {**PROFILE, 'columns': {'ts': 'time', 'sensor_name': 'id'}}
-        with self.assertRaises(ValueError):
-            validate_profile(profile)
+        self.assertEqual(validate_profile(profile)['columns'], profile['columns'])
         profile['columns']['pt'] = 'kw'
         self.assertEqual(validate_profile(profile)['columns']['pt'], 'kw')
 
@@ -419,7 +418,8 @@ class IntegrationTests(unittest.TestCase):
             process_job(controller, preview)
             self.assertTrue(self.store.profile(profile['id'])['validated'])
             self.assertEqual(self.totals()['rows'], 0)
-            apply = self.store.enqueue(profile['id'], 'apply', date(2026, 10, 15), date(2026, 10, 16))
+            self.store.query("UPDATE adapter_control.jobs SET status='succeeded' WHERE id=%s", (preview['id'],))
+            apply = self.store.enqueue(profile['id'], 'apply', date(2026, 10, 15), date(2026, 10, 16), preview_id=preview['id'])
             process_job(controller, apply)
             self.assertEqual(self.totals(), {'rows': 24, 'energy': Decimal(48)})
             with psycopg.connect(directory_dsn) as conn:

@@ -118,9 +118,13 @@ class Controller:
             with psycopg.connect(self.registry[alias], autocommit=True, row_factory=dict_row, connect_timeout=8) as conn:
                 conn.execute("SET default_transaction_read_only=on")
                 conn.execute("SET statement_timeout='10s'")
-                return conn.execute('''SELECT table_schema || '.' || table_name AS name
-                    FROM information_schema.tables WHERE table_schema NOT IN ('pg_catalog','information_schema')
-                    AND table_type IN ('BASE TABLE','VIEW','FOREIGN') ORDER BY 1 LIMIT 500''').fetchall()
+                return conn.execute('''SELECT format('%I.%I',n.nspname,c.relname) AS name
+                    FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+                    WHERE n.nspname NOT IN ('pg_catalog','information_schema')
+                    AND n.nspname NOT LIKE 'pg_toast%%' AND n.nspname NOT LIKE 'pg_temp_%%'
+                    AND c.relkind IN ('r','p','v','m','f') AND has_schema_privilege(n.oid,'USAGE')
+                    AND (has_table_privilege(c.oid,'SELECT') OR has_any_column_privilege(c.oid,'SELECT'))
+                    ORDER BY 1 LIMIT 500''').fetchall()
         if method == 'GET' and route == ['profiles']:
             return self.store.query("SELECT * FROM adapter_control.profiles WHERE document ? 'columns' ORDER BY created_at DESC LIMIT 100")
         if method == 'POST' and route == ['profiles']:
@@ -190,6 +194,8 @@ class Controller:
                 effective_end = min(end, datetime.now(ZoneInfo('Europe/Moscow')).date())
                 if not plan or date.fromisoformat(plan['to_exclusive'][:10]) != effective_end:
                     raise ValueError('После предварительного расчёта изменилась граница завершённых суток. Повторите проверку.')
+                if not any(event['event'] == 'schema' for event in preview['events']):
+                    raise ValueError('Нужен новый предварительный расчёт с проверкой доступных столбцов')
             return self.store.enqueue(profile['id'], kind, begin, end, preview_id)
         raise ValueError('Неизвестная операция')
 
@@ -208,6 +214,22 @@ def process_job(controller, job, stop_requested=None):
     if profile_record['signature'] != fingerprint(settings):
         raise ValueError('Подключения или параметры назначения изменились. Создайте и проверьте новую версию профиля.')
     allowed = directory_names(document, controller.registry)
+    expected_schema = None
+    if job['kind'] == 'apply':
+        preview = store.job(job.get('preview_id') or '')
+        if (preview['status'] != 'succeeded' or preview['kind'] != 'preview'
+                or preview['profile_id'] != job['profile_id']
+                or (preview['date_from'], preview['date_to']) != (job['date_from'], job['date_to'])):
+            raise ValueError('Нужен успешный предварительный расчёт того же профиля и диапазона')
+        plan = next((event for event in preview['events'] if event['event'] == 'plan'), None)
+        effective_end = min(job['date_to'], datetime.now(ZoneInfo('Europe/Moscow')).date())
+        if not plan or date.fromisoformat(plan['to_exclusive'][:10]) != effective_end:
+            raise ValueError('После предварительного расчёта изменилась граница завершённых суток. Повторите проверку.')
+        expected_schema = next((event.get('signature') for event in preview['events'] if event['event'] == 'schema'), None)
+        if not expected_schema:
+            raise ValueError('Выполните новый предварительный расчёт с проверкой доступных столбцов')
+    if job['kind'] == 'preview':
+        store.query('UPDATE adapter_control.profiles SET validated=false WHERE id=%s', (job['profile_id'],))
     errors = []
     days = []
     def emit(event):
@@ -221,7 +243,8 @@ def process_job(controller, job, stop_requested=None):
                             (next_day, job['profile_id'], date.fromisoformat(event['date'])))
         store.event(job['id'], clean_json(event))
     refresh(settings, start=job['date_from'], end=job['date_to'], apply=job['kind'] in ('apply', 'scheduled'),
-            emit=emit, allowed_sensors=allowed, stop_requested=stop_requested)
+            emit=emit, allowed_sensors=allowed, stop_requested=stop_requested,
+            expected_schema_signature=expected_schema)
     if errors:
         raise RefreshError('; '.join(dict.fromkeys(errors)))
     if not days:

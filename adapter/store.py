@@ -68,10 +68,12 @@ class Store:
 
     def enqueue(self, profile_id, kind, begin=None, end=None, preview_id=None, slot=None):
         job_id = str(uuid.uuid4())
-        row = self.query('''INSERT INTO adapter_control.jobs(id,profile_id,kind,date_from,date_to,preview_id,slot)
-            VALUES(%s,%s,%s,%s,%s,%s,%s) ON CONFLICT(slot) DO NOTHING RETURNING *''',
-            (job_id, profile_id, kind, begin, end, preview_id, slot), one=True)
-        return row
+        with self.connection() as conn:
+            if kind == 'preview':
+                conn.execute('UPDATE adapter_control.profiles SET validated=false WHERE id=%s', (profile_id,))
+            return conn.execute('''INSERT INTO adapter_control.jobs(id,profile_id,kind,date_from,date_to,preview_id,slot)
+                VALUES(%s,%s,%s,%s,%s,%s,%s) ON CONFLICT(slot) DO NOTHING RETURNING *''',
+                (job_id, profile_id, kind, begin, end, preview_id, slot)).fetchone()
 
     def event(self, job_id, event):
         self.query('''UPDATE adapter_control.jobs SET events=(

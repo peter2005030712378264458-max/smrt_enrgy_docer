@@ -66,6 +66,7 @@ For SQL, bind values as parameters and validate/quote dynamic identifiers using 
 | Component / working directory | Command | Scope |
 | --- | --- | --- |
 | Frontend | `npm run test:mapping` | Node's built-in test runner for column-mapping visibility |
+| Frontend | `npm run test:dashboard` | Missing measurements versus real zero, timeline gaps, and fallback values |
 | Frontend | `npm run lint` and `npm run build` | Static checks and production build; manually verify affected screens |
 | Backend | `python manage.py test apps.consumption apps.aggregation apps.users` | Django `SimpleTestCase` / DRF `APIClient`, including admin and session tests; external calls are mocked |
 | Analytics | `python -m pytest` | Validation, period statistics, Z-table, API health, and saved-energy behavior |
@@ -81,6 +82,7 @@ Name tests `test_*`; analytics files use `test_*.py`. Cover validation, authenti
 - Source readings and metadata are read-only. Refreshes replace all rows for each selected day in **both** existing aggregate tables in one transaction per day, protected by target locks. Preserve rollback, idempotency, and retry/progress behavior; different source profiles cannot safely merge independent data into the same target day.
 - Ranges are `[from, to)` in the configured timezone; unfinished/current and future days are excluded. Keep the Moscow output/calendar conventions. Explicitly interpret timezone-naive source timestamps through `source_timezone`.
 - Profiles are versioned and require confirmed mappings, units, and sampling interval. Preserve the successful preview requirement before service apply/activation and the separate schedule enablement. Source schema changes, duplicates, inadequate coverage, or unknown sensors must not silently bypass quality checks.
+- Only timestamp and meter ID are required source mappings. Missing/unreadable optional measurement columns produce NULL and schema warnings; an existing mapped column of the wrong type is an error. Missing required columns, NULL timestamps (checked across the source), and blank/NULL IDs in the requested range stop refresh before replacement. Total power needs its total reading or all three valid phases; partial phases remain individual measurements. Manual apply requires the schema signature from a fresh successful preview. See `adapter/REVIEW.md` for the checked scenarios and limitations.
 - Energy uses a confirmed measurement interval and normalized power units; never guess the interval or treat the old minute-based SQL formula as a reference for 5-second readings. Missing/invalid power can produce warnings for individual meters and `NULL` energy; a real zero remains zero. Preserve unknown energy in aggregate totals rather than converting it to zero or silently summing only known values.
 - `ENERGY_USE_STORED_ENERGY` defaults to `0` (legacy consumption calculation). Enabling stored `energy_kwh` requires historical validation/recalculation and the same flag in Django and analytics. Follow the transition procedure in `adapter/README.md`; an adapter deployment alone does not switch consumers.
 

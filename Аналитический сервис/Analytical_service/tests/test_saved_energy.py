@@ -19,6 +19,6 @@ def test_saved_energy_null_is_preserved_and_power_statistics_are_unchanged():
     query = cursor.execute.call_args.args[0]
     assert 'SUM(a.energy_kwh)' in query
     assert 'COUNT(a.energy_kwh)' in query
-    assert 'SUM(a.active_power_w_avg) / 1000.0 AS hourly_total_kw' in query
+    assert 'COUNT(a.active_power_w_avg)' in query
     assert result.total_energy_kwh is None
     assert result.mean_kw == 2

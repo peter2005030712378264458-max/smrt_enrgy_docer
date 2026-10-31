@@ -13,9 +13,9 @@ import psycopg
 from psycopg.conninfo import conninfo_to_dict
 from psycopg.rows import dict_row
 
-from .model import DAILY_COLUMNS, HOURLY_COLUMNS, Settings, build_rows, day_windows, plan_window, table_parts
+from .model import DAILY_COLUMNS, HOURLY_COLUMNS, METRICS, Settings, build_rows, day_windows, plan_window, table_parts
 from .queries import SOURCE_COLUMNS, hourly_query, insert_query, window_query
-from .mapping import column_types, source_cte
+from .mapping import column_types, source_capabilities, source_cte
 from psycopg import sql
 
 
@@ -97,7 +97,7 @@ def preflight(connection, name, columns, bucket_type=None):
 @contextmanager
 def target_lock(connection, settings):
     # Shared hourly OR daily table means shared lock, even if the other table differs.
-    keys = sorted({int.from_bytes(hashlib.sha256(name.encode()).digest()[:8], "big", signed=True)
+    keys = sorted({int.from_bytes(hashlib.sha256(json.dumps(table_parts(name)).encode()).digest()[:8], "big", signed=True)
                    for name in (settings.hourly_table, settings.daily_table)})
     acquired = []
     try:
@@ -117,7 +117,7 @@ def configure_session(connection, settings, readonly):
     connection.execute("SET TIME ZONE 'UTC'")
 
 
-def quality_report(source, normalized, settings, begin, finish, stats, target, allowed_sensors):
+def quality_report(source, normalized, settings, begin, finish, stats, target, allowed_sensors, power_available=True):
     """Reject unsafe replacement before deleting anything; retain diagnostics in dry-run."""
     profile = settings.profile
     sample = settings.sample_seconds
@@ -150,18 +150,23 @@ def quality_report(source, normalized, settings, begin, finish, stats, target, a
         counts[name] = counts.get(name, 0) + row['active_power_w_avg_count']
     if not counts:
         failures.append('Нет исходных показаний: день не отмечен обработанным')
-    coverage = {name: float(Decimal(count) / expected) for name, count in counts.items()}
+    point_counts = {}
+    for row in stats:
+        point_counts[row['sensor_name']] = point_counts.get(row['sensor_name'], 0) + row['points_count']
+    coverage_counts = counts if power_available else point_counts
+    coverage = {name: float(Decimal(count) / expected) for name, count in coverage_counts.items()}
     missing_power = sorted(name for name, count in counts.items() if count == 0)
     if missing_power:
         warnings.append('Нет корректной активной мощности; мощность и энергия останутся NULL (нет данных): '
                         + ', '.join(missing_power)
                         + '. Полное потребление по всем счётчикам определить нельзя.')
     insufficient_power = sorted(name for name, value in coverage.items()
-                                if counts[name] > 0 and value < profile['quality']['min_coverage'])
+                                if coverage_counts[name] > 0 and value < profile['quality']['min_coverage'])
     if insufficient_power:
-        failures.append('Неполный день или недостаточно корректных показаний мощности: '
+        failures.append(('Неполный день или недостаточно корректных показаний мощности: ' if power_available
+                         else 'Неполный день или недостаточно исходных показаний: ')
                         + ', '.join(insufficient_power))
-    if counts and not any(counts.values()):
+    if power_available and counts and not any(counts.values()):
         failures.append('Нет корректной активной мощности ни у одного счётчика')
     if allowed_sensors is not None and set(counts) - set(allowed_sensors):
         failures.append('Имена счётчиков отсутствуют в справочнике приложения')
@@ -173,18 +178,34 @@ def quality_report(source, normalized, settings, begin, finish, stats, target, a
         previous = target.execute(sql.SQL('''SELECT sensor_name, SUM(points_count) AS points
             FROM {} WHERE bucket_start >= %s AND bucket_start < %s GROUP BY sensor_name''').format(
                 sql.Identifier(*table_parts(settings.hourly_table))), (begin-timedelta(days=1), begin)).fetchall()
-    point_counts = {}
-    for row in stats:
-        point_counts[row['sensor_name']] = point_counts.get(row['sensor_name'], 0) + row['points_count']
     if any(point_counts.get(r['sensor_name'], 0) < float(r['points']) * profile['quality']['min_existing_points_ratio'] for r in previous):
         failures.append('Исчезли счётчики или существенно уменьшилось число показаний')
+    available_metrics = [metric for metric in METRICS if any(row[metric + '_count'] for row in stats)]
     return {**dict(rows), 'coverage': coverage, 'missing_power_sensors': missing_power,
+            'coverage_basis': 'active_power' if power_available else 'readings',
+            'available_metrics': available_metrics,
+            'unavailable_metrics': [metric for metric in METRICS if metric not in available_metrics],
             'warnings': warnings, 'errors': failures}
+
+
+def validate_required_rows(source, profile, normalized, begin, finish):
+    # A row without a timestamp cannot be assigned to any requested day. Do not
+    # silently drop it and certify the replacement as complete (including CLI).
+    missing_time = source.execute(sql.SQL('SELECT 1 FROM {} WHERE {} IS NULL LIMIT 1').format(
+        sql.Identifier(*table_parts(profile['source_table'])), sql.Identifier(profile['columns']['ts']))).fetchone()
+    if missing_time:
+        raise RefreshError('В источнике есть строки без времени (NULL). Их нельзя отнести к суткам. Исправьте время или выберите подготовленное представление; прежние агрегаты сохранены.')
+    invalid_names = source.execute(sql.SQL('''WITH readings AS ({})
+        SELECT 1 FROM readings WHERE sensor_name IS NULL OR BTRIM(sensor_name)='' LIMIT 1''').format(
+            normalized), {'start': begin, 'end': finish}).fetchone()
+    if invalid_names:
+        raise RefreshError('В выбранном периоде есть строки без идентификатора счётчика. Прежние агрегаты сохранены.')
 
 
 def refresh(settings: Settings, *, start: date | None = None, end: date | None = None,
             apply=False, checkpoint_path=Path("energy_aggregation/local.checkpoint.json"),
-            allow_empty=False, now=None, emit=None, allowed_sensors=None, stop_requested=None):
+            allow_empty=False, now=None, emit=None, allowed_sensors=None, stop_requested=None,
+            expected_schema_signature=None):
     """No DDL, scheduler installation or writes to the source. Dry-run is the default."""
     checkpoint_path = Path(checkpoint_path)
     signature = fingerprint(settings)
@@ -208,11 +229,15 @@ def refresh(settings: Settings, *, start: date | None = None, end: date | None =
             target_endpoint = target.execute('SELECT inet_server_addr()::text AS host, inet_server_port() AS port').fetchone()
             if source_endpoint == target_endpoint:
                 raise RefreshError("Use separate source and target databases")
-        normalized = None
-        if settings.profile:
-            normalized = source_cte(settings.profile, column_types(source, settings.profile))
-        else:
-            preflight(source, settings.source_table, SOURCE_COLUMNS)
+        source_profile = settings.profile or {
+            'source_table': settings.source_table, 'columns': {field: field for field in SOURCE_COLUMNS}}
+        types = column_types(source, source_profile)
+        capabilities = source_capabilities(source_profile, types)
+        if not settings.profile and types.get('ts') != 'timestamptz':
+            raise ValueError('Для timestamp без часового пояса нужен подтверждённый профиль с source_timezone')
+        normalized = source_cte(source_profile, types)
+        if expected_schema_signature is not None and expected_schema_signature != capabilities['signature']:
+            raise RefreshError('Структура источника изменилась после предварительного расчёта. Выполните новый предварительный расчёт; прежние агрегаты сохранены.')
         preflight(target, settings.hourly_table, HOURLY_COLUMNS, "timestamptz")
         preflight(target, settings.daily_table, DAILY_COLUMNS, "date")
         with target_lock(target, settings):
@@ -222,9 +247,12 @@ def refresh(settings: Settings, *, start: date | None = None, end: date | None =
             report({"event": "plan", "mode": "apply" if apply else "dry-run", "from": begin.isoformat(),
                     "to_exclusive": finish.isoformat(), "timezone": settings.timezone,
                     "energy": "fixed-interval estimate" if settings.sample_seconds is not None else "not calculated"})
+            report({'event': 'schema', **capabilities})
             if end is None or finish.date() < end:
                 report({'event': 'notice', 'detail': 'Сегодняшние и будущие незавершённые сутки исключены',
                         'to_exclusive': finish.isoformat()})
+            if begin < finish:
+                validate_required_rows(source, source_profile, normalized, begin, finish)
             for day_start, day_end in day_windows(begin, finish, settings.timezone):
                 if stop_requested and stop_requested():
                     raise RefreshInterrupted('Остановка на границе суток; задание будет возобновлено')
@@ -241,7 +269,8 @@ def refresh(settings: Settings, *, start: date | None = None, end: date | None =
                             row['sensor_name'] = mapping.get(row['sensor_name'], row['sensor_name'])
                         if len({(r['bucket_start'], r['sensor_name']) for r in stats}) != len(stats):
                             raise RefreshError('Преобразование имён объединило разные счётчики')
-                        quality = quality_report(source, normalized, settings, day_start, day_end, stats, target, allowed_sensors)
+                        quality = quality_report(source, normalized, settings, day_start, day_end, stats, target, allowed_sensors,
+                                                 power_available='active_power_w_avg' in capabilities['available_metrics'])
                         report({'event': 'quality', 'date': day_start.date().isoformat(), **quality})
                         if apply and quality['errors']:
                             raise RefreshError('; '.join(quality['errors']))

@@ -121,14 +121,15 @@ def fetch_period_stats(
         data_filter = "AND a.sensor_name::text = ANY(%(data_names)s)"
         params["data_names"] = data_names
 
+    complete_power_sql = 'CASE WHEN COUNT(*)=COUNT(a.active_power_w_avg) THEN SUM(a.active_power_w_avg) / 1000.0 ELSE NULL END'
     energy_sql = ('CASE WHEN COUNT(*)=COUNT(a.energy_kwh) THEN SUM(a.energy_kwh) ELSE NULL END'
-                  if settings.use_stored_energy else 'SUM(a.active_power_w_avg) / 1000.0')
+                  if settings.use_stored_energy else complete_power_sql)
 
     sql = f"""
         WITH hourly AS (
             SELECT
                 a.bucket_start,
-                SUM(a.active_power_w_avg) / 1000.0 AS hourly_total_kw,
+                {complete_power_sql} AS hourly_total_kw,
                 {energy_sql} AS hourly_energy_kwh,
                 SUM(a.points_count) AS source_points
             FROM {settings.hourly_table} a
@@ -138,7 +139,7 @@ def fetch_period_stats(
             GROUP BY a.bucket_start
         )
         SELECT
-            COUNT(*) AS observations,
+            COUNT(hourly_total_kw) AS observations,
             COALESCE(SUM(source_points), 0) AS source_points,
             AVG(hourly_total_kw) AS mean_kw,
             STDDEV_SAMP(hourly_total_kw) AS stddev_kw,

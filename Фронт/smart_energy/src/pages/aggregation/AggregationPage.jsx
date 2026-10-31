@@ -5,6 +5,7 @@ import { ROUTES } from '../../app/routes.js'
 import { formatDateTime, formatNumber } from '../dashboard/dashboardUtils.js'
 import ThemeToggle from '../../shared/theme/ThemeToggle.jsx'
 import ColumnMappingEditor from './ColumnMappingEditor.jsx'
+import { mappingAvailability, METRIC_LABELS } from './mappingAvailability.js'
 import './aggregation.css'
 
 const FIELDS = {
@@ -24,8 +25,8 @@ const initialProfile = {
 }
 
 function qualityWarnings(job) {
-  return (job?.events ?? []).filter((event) => event.event === 'quality')
-    .flatMap((event) => (event.warnings ?? []).map((message) => `${event.date}: ${message}`))
+  return (job?.events ?? []).flatMap((event) => (event.warnings ?? [])
+    .map((message) => event.date ? `${event.date}: ${message}` : message))
 }
 
 function moscowDate(offset = 0) {
@@ -96,9 +97,12 @@ export default function AggregationPage() {
   const inspected = inspectionJob?.events.find((event) => event.event === 'inspection')
   const effectiveInspection = inspected ?? inspection
   const selected = profiles.find((item) => item.id === selectedId)
-  const preview = jobs.find((job) => job.kind === 'preview' && job.status === 'succeeded' &&
+  const latestPreview = jobs.find((job) => job.kind === 'preview' &&
     job.profile_id === selectedId && job.date_from === from && job.date_to === to)
+  const preview = latestPreview?.status === 'succeeded' ? latestPreview : null
   const detail = jobs.find((job) => job.id === focusedJob) ?? jobs[0]
+  const availability = mappingAvailability(profile.columns, effectiveInspection)
+  const detailSchema = detail?.events.find(event => event.event === 'schema')
 
   async function action(fn) {
     setBusy(true)
@@ -115,7 +119,10 @@ export default function AggregationPage() {
 
   function useSuggestions() {
     if (!effectiveInspection) return
-    const columns = Object.fromEntries(Object.entries(effectiveInspection.suggestions).map(([key, value]) => [key, value.column]))
+    const columns = { ...profile.columns }
+    for (const [key, value] of Object.entries(effectiveInspection.suggestions)) {
+      if (!columns[key] && value.column) columns[key] = value.column
+    }
     changeProfile('columns', columns)
     setInspection(effectiveInspection)
     setNotice('Соответствия предложены. Проверьте единицы, время, интервал и имена счётчиков.')
@@ -144,6 +151,8 @@ export default function AggregationPage() {
             const next = profiles.find((p) => p.id === e.target.value)
             setSelectedId(next?.id ?? '')
             if (next) { setProfile(next.document); setAdvanced(JSON.stringify({ sensor_map: next.document.sensor_map ?? {}, quality: next.document.quality ?? {}, ...(next.document.directory_connection ? { directory_connection: next.document.directory_connection } : {}), directory_table: next.document.directory_table ?? 'public.sensor_directory', directory_column: next.document.directory_column ?? 'sensor_name' }, null, 2)); setInspection(null); setInspectionId('') }
+            else { setProfile(initialProfile); setAdvanced(''); setInspection(null); setInspectionId('') }
+            setReplaceConfirmed(false)
           }}><option value="">Новая версия</option>{profiles.filter((p) => p.document.columns).map((p) => <option key={p.id} value={p.id}>{p.document.name} · {p.id.slice(0, 8)}{p.active ? ' · активен' : ''}{p.validated ? ' · проверен' : ''}</option>)}</select></label>
           <div className="aggregation-grid">
             <label>Название<input value={profile.name} onChange={(e) => changeProfile('name', e.target.value)} /></label>
@@ -155,18 +164,20 @@ export default function AggregationPage() {
           <div className="aggregation-actions">
             <button disabled={busy || !profile.connection} onClick={() => action(async () => setTables(await getSourceTables(profile.connection)))}>Показать таблицы</button>
             <button disabled={busy || !profile.connection || !profile.source_table} onClick={() => action(async () => {
+              setInspection(null)
               const job = await aggregationRequest('inspect', { connection: profile.connection, source_table: profile.source_table })
               setInspectionId(job.id); setFocusedJob(job.id); setNotice('Обследование запущено. Результат появится на этой странице.')
             })}>Обследовать источник</button>
             <button disabled={!effectiveInspection} onClick={useSuggestions}>Применить предложения</button>
           </div>
           {inspectionJob && <p role="status">Обследование: {STATUS[inspectionJob.status]} {inspectionJob.error}</p>}
+          {(effectiveInspection?.warnings ?? []).map(message => <p className="aggregation-message warning" role="status" key={message}>{message}</p>)}
           <p>Преобразование в Вт, вар, В·А, А, В и Гц: множитель 1 сохраняет единицу, 1000 переводит кВт в Вт. Название столбца не подтверждает единицу.</p>
           <ColumnMappingEditor key={`${profile.connection}:${profile.source_table}`} fields={FIELDS} profile={profile} inspection={effectiveInspection} onChange={changeProfile} />
           {effectiveInspection && <details><summary>Структура и пример показаний</summary><pre>{JSON.stringify({ columns: effectiveInspection.columns, sample: effectiveInspection.sample }, null, 2)}</pre></details>}
           <details><summary>Справочник, соответствия ID и пороги качества</summary><p>JSON: sensor_map связывает ID заказчика с именами приложения. Порог min_coverage — минимальная доля показаний за сутки.</p><textarea rows="12" aria-label="Дополнительная конфигурация" value={advanced} onChange={(e) => { setAdvanced(e.target.value); setSelectedId(''); setProfile({ ...profile, confirmed: false }) }} placeholder={'{"sensor_map": {}, "quality": {"min_coverage": 0.9}}'} /></details>
           <label className="aggregation-check"><input type="checkbox" checked={profile.confirmed} onChange={(e) => changeProfile('confirmed', e.target.checked)} />Подтверждаю соответствия, единицы, интервал и часовой пояс</label>
-          <div className="aggregation-actions"><button disabled={busy || !profile.confirmed} onClick={() => action(async () => {
+          <div className="aggregation-actions"><button disabled={busy || !profile.confirmed || availability.errors.length > 0} onClick={() => action(async () => {
             const extra = advanced.trim() ? JSON.parse(advanced) : {}
             if (Object.keys(extra).some((key) => !['sensor_map', 'quality', 'directory_connection', 'directory_table', 'directory_column'].includes(key))) throw new Error('В дополнительных настройках допустимы только справочник, sensor_map и quality')
             const saved = await aggregationRequest('profiles', { ...profile, ...extra })
@@ -183,9 +194,24 @@ export default function AggregationPage() {
           const days = job.events.filter((event) => event.event === 'day')
           return <tr key={job.id}><td><button className="aggregation-link" onClick={() => setFocusedJob(job.id)}>{formatDateTime(job.created_at)}</button></td><td>{KIND[job.kind]}<br />{job.date_from} {job.date_to && `→ ${job.date_to}`}</td><td>{job.status === 'succeeded' && qualityWarnings(job).length ? 'Готово с предупреждениями' : STATUS[job.status]}</td><td>{days.length ? `${days.length} дн., ${days.reduce((n, d) => n + d.hourly_rows, 0)} часовых строк` : job.error ?? '—'}</td></tr>
         })}</tbody></table></div>{!jobs.length && <p>Заданий пока нет.</p>}
-          {detail && <div><h3>{KIND[detail.kind]} · {detail.id.slice(0, 8)}</h3>{detail.error && <p className="aggregation-message error">{detail.error}</p>}{detail.events.filter((event) => event.event === 'quality').slice(-5).map((event, index) => <div className="aggregation-quality" key={`${event.date}-${index}`}><strong>{event.date}</strong><span>{formatNumber(event.points, 0)} показаний · медиана интервала {formatNumber(event.median_seconds, 3)} с · дубликаты {event.duplicates}</span><div className="aggregation-coverage">{Object.entries(event.coverage).map(([name, coverage]) => <div key={name}><span>{name}</span><meter min="0" max="1" value={Math.min(coverage, 1)} /><span>{formatNumber(coverage * 100, 1)}%</span></div>)}</div>{(event.warnings ?? []).map((message) => <p key={message} className="aggregation-message warning">{message}</p>)}{event.errors.map((message) => <p key={message} className="aggregation-message error">{message}</p>)}</div>)}<details><summary>Подробный журнал</summary><pre>{JSON.stringify(detail.events, null, 2)}</pre></details></div>}
+          {detail && <div><h3>{KIND[detail.kind]} · {detail.id.slice(0, 8)}</h3>{detail.error && <p className="aggregation-message error">{detail.error}</p>}
+            {detailSchema && <div className="aggregation-quality"><strong>Доступность столбцов на момент расчёта</strong><p>{detailSchema.available_metrics.map(metric => METRIC_LABELS[metric] ?? metric).join(', ') || 'Только число показаний'}</p>{(detailSchema.warnings ?? []).map(message => <p className="aggregation-message warning" key={message}>{message}</p>)}</div>}
+            {detail.events.filter((event) => event.event === 'quality').slice(-5).map((event, index) => <QualityDetails key={`${event.date}-${index}`} event={event} />)}<details><summary>Подробный журнал</summary><pre>{JSON.stringify(detail.events, null, 2)}</pre></details></div>}
         </section>
       </> : !error && <p role="status">Проверяем доступ…</p>}
     </main>
   )
+}
+
+function QualityDetails({ event }) {
+  return <div className="aggregation-quality">
+    <strong>{event.date}</strong>
+    <span>{formatNumber(event.points, 0)} показаний · медиана интервала {formatNumber(event.median_seconds, 3)} с · дубликаты {event.duplicates}</span>
+    {event.available_metrics && <p>Есть значения: {event.available_metrics.map(metric => METRIC_LABELS[metric] ?? metric).join(', ') || 'только число показаний'}.</p>}
+    {event.unavailable_metrics?.length > 0 && <p>Нет корректных значений: {event.unavailable_metrics.map(metric => METRIC_LABELS[metric] ?? metric).join(', ')}. Они остаются NULL.</p>}
+    <p>Покрытие: {event.coverage_basis === 'readings' ? 'по числу исходных показаний (мощность недоступна)' : 'по корректным показаниям активной мощности'}.</p>
+    <div className="aggregation-coverage">{Object.entries(event.coverage).map(([name, coverage]) => <div key={name}><span>{name}</span><meter min="0" max="1" value={Math.min(coverage, 1)} /><span>{formatNumber(coverage * 100, 1)}%</span></div>)}</div>
+    {(event.warnings ?? []).map(message => <p key={message} className="aggregation-message warning">{message}</p>)}
+    {(event.errors ?? []).map(message => <p key={message} className="aggregation-message error">{message}</p>)}
+  </div>
 }

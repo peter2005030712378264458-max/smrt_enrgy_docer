@@ -81,7 +81,8 @@ class WeekdayHeatmapQueryTests(SimpleTestCase):
                 _, _, analytics = self.run_report(granularity=granularity)
                 sql, params = analytics.execute.call_args.args
                 self.assertIn(dashboard_queries._daily_table(), sql)
-                self.assertIn("SUM(a.active_power_w_avg * 24.0) / 1000.0", sql)
+                self.assertIn("COUNT(*)=COUNT(a.active_power_w_avg)", sql)
+                self.assertIn("SUM(a.active_power_w_avg) ELSE NULL END) * 24.0 / 1000.0", sql)
                 self.assertIn("ISODOW FROM a.bucket_start::date", sql)
                 self.assertIn("LEFT(%s, 10)::date", sql)
                 self.assertEqual(params[0], "meter-1")
@@ -90,7 +91,8 @@ class WeekdayHeatmapQueryTests(SimpleTestCase):
         _, _, analytics = self.run_report(granularity="hour")
         sql, params = analytics.execute.call_args.args
         self.assertIn(dashboard_queries._hourly_table(), sql)
-        self.assertIn("SUM(a.active_power_w_avg) / 1000.0", sql)
+        self.assertIn("COUNT(*)=COUNT(a.active_power_w_avg)", sql)
+        self.assertIn("SUM(a.active_power_w_avg) ELSE NULL END) / 1000.0", sql)
         self.assertIn("AT TIME ZONE 'Europe/Moscow'", sql)
         self.assertIn("a.bucket_start::timestamptz >= %s::timestamptz", sql)
         self.assertEqual(len(params), 3)

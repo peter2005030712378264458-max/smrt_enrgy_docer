@@ -1,8 +1,11 @@
 """Explicit, versionable source contracts. Suggestions never activate a profile."""
 from copy import deepcopy
 from decimal import Decimal
+import hashlib
+import json
 from zoneinfo import ZoneInfo
 
+import psycopg
 from psycopg import sql
 
 from .model import table_parts
@@ -23,6 +26,19 @@ for prefix, names in (('p', ('power', 'active_power')), ('q', ('reactive_power',
     for phase in range(1, 4):
         ALIASES[f'{prefix}{phase}'] = (f'{prefix}{phase}', *(f'{name}_l{phase}' for name in names),
                                      *(f'{name}_phase{phase}' for name in names))
+
+NUMERIC_TYPES = {'int2', 'int4', 'int8', 'numeric', 'float4', 'float8'}
+TIME_TYPES = {'timestamp', 'timestamptz'}
+METRIC_INPUTS = {
+    'active_power_w_avg': (('pt',), ('p1', 'p2', 'p3')),
+    'phase1_power_w_avg': (('p1',),), 'phase2_power_w_avg': (('p2',),),
+    'phase3_power_w_avg': (('p3',),),
+    'reactive_power_var_avg': (('qt',), ('q1', 'q2', 'q3')),
+    'apparent_power_va_avg': (('st',), ('s1', 's2', 's3')),
+    'current_avg_a': (('i1',), ('i2',), ('i3',)),
+    'voltage_avg_v': (('u1',), ('u2',), ('u3',)),
+    'frequency_hz_avg': (('frequency',),), 'meter_temperature_avg': (('t',),),
+}
 
 
 def validate_profile(value):
@@ -51,8 +67,6 @@ def validate_profile(value):
             raise ValueError(f'Некорректный столбец {field}')
     if not columns.get('ts') or not columns.get('sensor_name'):
         raise ValueError('Нужны время и идентификатор счётчика')
-    if not columns.get('pt') and not all(columns.get(f'p{i}') for i in (1, 2, 3)):
-        raise ValueError('Нужна общая активная мощность или все три фазы; накопленная энергия пока не поддерживается')
     scales = value.get('scales', {})
     if not isinstance(scales, dict) or set(scales) - (set(FIELDS) - {'ts', 'sensor_name'}):
         raise ValueError('Некорректные единицы измерения')
@@ -87,14 +101,20 @@ def validate_profile(value):
 def _source_columns(connection, table_name):
     schema, name = table_parts(table_name)
     columns = connection.execute('''
-        SELECT a.attname AS name, t.typname AS type, col_description(c.oid,a.attnum) AS comment
+        SELECT a.attname AS name, COALESCE(base.typname,t.typname) AS type,
+               format_type(a.atttypid,a.atttypmod) AS declared_type,
+               col_description(c.oid,a.attnum) AS comment,
+               NOT a.attnotnull AS nullable,
+               (has_schema_privilege(n.oid,'USAGE') AND has_column_privilege(c.oid,a.attnum,'SELECT')) AS readable
         FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
         JOIN pg_attribute a ON a.attrelid=c.oid JOIN pg_type t ON t.oid=a.atttypid
+        LEFT JOIN pg_type base ON t.typtype='d' AND base.oid=t.typbasetype
         WHERE n.nspname=%s AND c.relname=%s AND a.attnum>0 AND NOT a.attisdropped
+          AND c.relkind IN ('r','p','v','m','f')
         ORDER BY a.attnum
     ''', (schema, name)).fetchall()
     if not columns:
-        raise ValueError('Таблица не найдена или не содержит столбцов')
+        raise ValueError('Таблица или представление не найдены либо не содержат столбцов')
     return columns
 
 
@@ -103,7 +123,9 @@ def inspect_source(connection, table_name):
     columns = _source_columns(connection, table_name)
     suggestions = {}
     for field in FIELDS:
-        matches = [c['name'] for c in columns if c['name'].casefold() in ALIASES[field]]
+        matches = [c['name'] for c in columns if c['name'].casefold() in ALIASES[field]
+                   and c['readable'] and (field == 'sensor_name' or c['type'] in
+                                         (TIME_TYPES if field == 'ts' else NUMERIC_TYPES))]
         suggestions[field] = {'column': matches[0] if len(matches) == 1 else None,
                               'candidates': matches, 'needs_confirmation': True}
     order = sql.SQL('')
@@ -126,40 +148,90 @@ def inspect_source(connection, table_name):
             # An unordered scan can spend the entire timeout on empty heap pages.
             # Only order by time when a leading B-tree key can avoid a full sort.
             order = sql.SQL(' ORDER BY {} DESC').format(sql.Identifier(timestamp))
-    sample = connection.execute(sql.SQL('SELECT * FROM {}{} LIMIT 5').format(
-        sql.Identifier(schema, name), order)).fetchall()
+    readable = [sql.Identifier(c['name']) for c in columns if c['readable']]
+    sample, warnings = [], []
+    if readable:
+        try:
+            # A savepoint keeps metadata usable after a sample timeout, including
+            # when the caller already has an open read-only transaction.
+            with connection.transaction():
+                sample = connection.execute(sql.SQL('SELECT {} FROM {}{} LIMIT 5').format(
+                    sql.SQL(', ').join(readable), sql.Identifier(schema, name), order)).fetchall()
+        except (psycopg.errors.QueryCanceled, psycopg.errors.InsufficientPrivilege):
+            warnings.append('Столбцы получены, но пример строк недоступен: превышено время чтения или недостаточно прав. Соответствия можно настроить по структуре.')
+    else:
+        warnings.append('Нет прав SELECT на столбцы источника. Структура показана, но расчёт требует доступа к времени, счётчику и выбранным измерениям.')
     return {'columns': columns, 'suggestions': suggestions, 'sample': sample,
+            'warnings': warnings,
             'notice': 'Единицы и семантика не определяются надёжно по названию. Подтвердите профиль.'}
 
 
-def source_cte(profile, column_types):
+def source_capabilities(profile, types):
     columns = profile['columns']
-    if any(c and c not in column_types for c in columns.values()):
-        raise ValueError('Структура источника изменилась: столбец из профиля отсутствует')
+    for field, label in (('ts', 'время'), ('sensor_name', 'идентификатор счётчика')):
+        if not columns.get(field) or columns[field] not in types:
+            raise ValueError(f'Обязательное поле «{label}»: столбец отсутствует или недоступен. Расчёт остановлен; прежние агрегаты сохранены.')
+    if types[columns['ts']] not in TIME_TYPES:
+        raise ValueError('Столбец времени должен иметь тип timestamp или timestamptz. Дата не подставляется автоматически.')
+    for field, column in columns.items():
+        if field not in ('ts', 'sensor_name') and column in types and types[column] not in NUMERIC_TYPES:
+            raise ValueError(f'{field} ({column}): ожидается числовой тип, получен {types[column]}')
+    fields = [field for field in FIELDS if columns.get(field) in types]
+    metrics = [metric for metric, alternatives in METRIC_INPUTS.items()
+               if any(all(field in fields for field in group) for group in alternatives)]
+    missing = [{'field': field, 'column': column} for field, column in columns.items()
+               if column and column not in types]
+    warnings = []
+    if missing:
+        warnings.append('Назначенные столбцы отсутствуют или недоступны: '
+                        + ', '.join(f"{item['field']} → {item['column']}" for item in missing)
+                        + '. Их значения сохраняются как NULL; остальные показатели рассчитываются.')
+    if 'active_power_w_avg' not in metrics:
+        warnings.append('Общая активная мощность и энергия недоступны: нужны pt или все три фазы p1, p2, p3. Доступные измерения и число показаний будут сохранены, энергия останется NULL.')
+    signature = hashlib.sha256(json.dumps(
+        {field: [columns.get(field), types.get(columns.get(field))] for field in FIELDS},
+        sort_keys=True).encode()).hexdigest()
+    return {'signature': signature, 'available_fields': fields, 'missing_columns': missing,
+            'available_metrics': metrics,
+            'unavailable_metrics': [metric for metric in METRIC_INPUTS if metric not in metrics],
+            'warnings': warnings}
+
+
+def source_cte(profile, column_types):
+    source_capabilities(profile, column_types)
+    columns = profile['columns']
     timestamp = sql.Identifier(columns['ts'])
+    start = sql.SQL('%(start)s')
+    end = sql.SQL('%(end)s')
     timestamp_type = column_types[columns['ts']]
     if timestamp_type == 'timestamp':
-        timestamp = sql.SQL('({} AT TIME ZONE {})').format(timestamp, sql.Literal(profile.get('source_timezone', 'Europe/Moscow')))
+        source_zone = sql.Literal(profile.get('source_timezone', 'Europe/Moscow'))
+        timestamp = sql.SQL('({} AT TIME ZONE {})').format(timestamp, source_zone)
+        start = sql.SQL('(%(start)s::timestamptz AT TIME ZONE {})').format(source_zone)
+        end = sql.SQL('(%(end)s::timestamptz AT TIME ZONE {})').format(source_zone)
     elif timestamp_type != 'timestamptz':
         raise ValueError('Столбец времени должен иметь тип timestamp или timestamptz')
     expressions = []
-    numeric_types = {'int2', 'int4', 'int8', 'numeric', 'float4', 'float8'}
     for field in FIELDS:
         column = columns.get(field)
         if field == 'ts':
             expression = timestamp
         elif field == 'sensor_name':
             expression = sql.SQL('{}::text').format(sql.Identifier(column))
-        elif column:
-            if column_types[column] not in numeric_types:
-                raise ValueError(f'{field}: ожидается числовой тип, получен {column_types[column]}')
-            expression = sql.SQL('({}::numeric * {})').format(sql.Identifier(column), sql.Literal(Decimal(str(profile.get('scales', {}).get(field, 1)))))
+        elif column and column in column_types:
+            # PostgreSQL 13 cannot cast float Infinity to numeric. Reject it
+            # before the cast, rather than letting one bad measurement abort
+            # the other available metrics.
+            expression = sql.SQL("CASE WHEN {}::text IN ('NaN','Infinity','-Infinity') THEN NULL ELSE {}::numeric * {} END").format(
+                sql.Identifier(column), sql.Identifier(column),
+                sql.Literal(Decimal(str(profile.get('scales', {}).get(field, 1)))))
         else:
             expression = sql.SQL('NULL::numeric')
         expressions.append(sql.SQL('{} AS {}').format(expression, sql.Identifier(field)))
-    return sql.SQL('SELECT {} FROM {} WHERE {} >= %(start)s AND {} < %(end)s').format(
-        sql.SQL(', ').join(expressions), sql.Identifier(*table_parts(profile['source_table'])), timestamp, timestamp)
+    return sql.SQL('SELECT {} FROM {} WHERE {} >= {} AND {} < {}').format(
+        sql.SQL(', ').join(expressions), sql.Identifier(*table_parts(profile['source_table'])),
+        sql.Identifier(columns['ts']), start, sql.Identifier(columns['ts']), end)
 
 
 def column_types(connection, profile):
-    return {c['name']: c['type'] for c in _source_columns(connection, profile['source_table'])}
+    return {c['name']: c['type'] for c in _source_columns(connection, profile['source_table']) if c['readable']}

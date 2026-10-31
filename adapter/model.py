@@ -21,9 +21,11 @@ DAILY_COLUMNS = ("bucket_start", "sensor_name", "points_count", "active_power_w_
 
 
 def table_parts(value: str) -> tuple[str, str]:
-    if not isinstance(value, str) or not re.fullmatch(r"[^\W\d]\w*\.[^\W\d]\w*", value):
-        raise ValueError("Table names must be schema-qualified: schema.table")
-    return tuple(value.split("."))
+    identifier = r'(?:"(?:[^"\x00]|"")+"|[^\W\d][\w$]*)'
+    match = re.fullmatch(rf'\s*({identifier})\s*\.\s*({identifier})\s*', value) if isinstance(value, str) else None
+    if not match:
+        raise ValueError('Укажите таблицу в формате схема.таблица, например public.electricity_sensor_readings')
+    return tuple(part[1:-1].replace('""', '"') if part.startswith('"') else part for part in match.groups())
 
 
 @dataclass(frozen=True)
@@ -42,7 +44,7 @@ class Settings:
     def __post_init__(self):
         for value in (self.source_table, self.hourly_table, self.daily_table):
             table_parts(value)
-        if self.hourly_table == self.daily_table:
+        if table_parts(self.hourly_table) == table_parts(self.daily_table):
             raise ValueError("Hourly and daily tables must be different")
         ZoneInfo(self.timezone)
         if self.lookback_days < 0 or self.statement_timeout_seconds <= 0:
@@ -107,7 +109,8 @@ def build_rows(stats: list[dict], settings: Settings) -> tuple[list[dict], list[
             power_sum = item["active_power_w_avg_sum"]
             row["energy_kwh"] = (
                 power_sum * settings.sample_seconds / Decimal(3600000)
-                if settings.sample_seconds is not None and power_sum is not None else None
+                if (settings.sample_seconds is not None and power_sum is not None
+                    and item['active_power_w_avg_count'] == item['points_count']) else None
             )
             hourly.append(row)
             day = item["bucket_start"].astimezone(ZoneInfo(settings.timezone)).date()

@@ -17,7 +17,7 @@ test('only unsupported optional targets are hidden; required targets stay visibl
   const result = mappingVisibility(fields, {}, inspect(['ts', 'sensor_name', 'pt']))
   assert.deepEqual(names(result), ['ts', 'sensor_name', 'pt'])
   assert.equal(result.hiddenCount, 5)
-  assert.deepEqual(names(mappingVisibility(fields, {}, inspect([]))), ['ts', 'sensor_name', 'pt'])
+  assert.deepEqual(names(mappingVisibility(fields, {}, inspect([]))), ['ts', 'sensor_name'])
 })
 
 test('a real temperature column remains available even for NULL and heterogeneous sensor samples', () => {
@@ -46,9 +46,9 @@ test('manual mappings and missing saved columns are always visible and never era
   assert.deepEqual(assigned, { t: 'customer_temp', frequency: 'deleted_hz' })
 })
 
-test('phase-only sources expose all three phases needed instead of requiring a total column', () => {
+test('phase-only sources expose existing phases without requiring absent measurements', () => {
   const result = mappingVisibility(fields, {}, inspect(['ts', 'sensor_name', 'p1', 'p2', 'p3']))
   assert.deepEqual(names(result), ['ts', 'sensor_name', 'p1', 'p2', 'p3'])
-  assert.deepEqual([...result.required], ['ts', 'sensor_name', 'p1', 'p2', 'p3'])
-  assert.ok(names(mappingVisibility(fields, {}, inspect(['p1']))).includes('p3'))
+  assert.deepEqual([...result.required], ['ts', 'sensor_name'])
+  assert.deepEqual(names(mappingVisibility(fields, {}, inspect(['p1']))), ['ts', 'sensor_name', 'p1'])
 })

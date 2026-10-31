@@ -8,6 +8,7 @@ import {
   XAxis,
   YAxis,
 } from 'recharts'
+import { buildPowerSeries } from '../../pages/dashboard/dashboardUtils.js'
 
 const TIME_ZONE = 'Europe/Moscow'
 
@@ -25,13 +26,12 @@ function tooltipLabel(value) {
 }
 
 export default function PowerTrendChart({ points, granularity }) {
-  const values = points
-    .map((point) => ({ timestamp: point.timestamp, actual: Number(point.value ?? 0) }))
-    .filter((point) => point.timestamp && Number.isFinite(point.actual))
-  const average = values.length ? values.reduce((sum, point) => sum + point.actual, 0) / values.length : 0
-  const data = values.map((point) => ({ ...point, average }))
+  const values = buildPowerSeries(points)
+  const known = values.filter(point => point.kw !== null)
+  const average = known.length ? known.reduce((sum, point) => sum + point.kw, 0) / known.length : null
+  const data = values.map(point => ({ timestamp: point.timestamp, actual: point.kw, average: point.kw === null ? null : average }))
 
-  if (!data.length) return <div className="energy-chart-empty" role="status">Нет данных для выбранных фильтров</div>
+  if (!known.length) return <div className="energy-chart-empty" role="status">Нет данных активной мощности для выбранных фильтров</div>
 
   return (
     <div className="energy-rechart" role="img" aria-label="График фактической и средней активной мощности в киловаттах, время московское">

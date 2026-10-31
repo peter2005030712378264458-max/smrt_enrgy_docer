@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { mappingVisibility } from './columnMappingVisibility.js'
+import { mappingAvailability, METRIC_LABELS } from './mappingAvailability.js'
 
 const COLUMN_MIME = 'application/x-energy-source-column'
 
@@ -24,6 +25,7 @@ export default function ColumnMappingEditor({ fields, profile, inspection, onCha
     `${column.name} ${column.type} ${column.comment ?? ''}`.toLocaleLowerCase().includes(search))
   const mappedCount = Object.keys(fields).filter((field) => profile.columns[field]).length
   const visibility = mappingVisibility(fields, profile.columns, inspection)
+  const availability = mappingAvailability(profile.columns, inspection)
   const targetFields = showAll ? Object.entries(fields) : visibility.visible
 
   function assign(field, name) {
@@ -46,6 +48,13 @@ export default function ColumnMappingEditor({ fields, profile, inspection, onCha
         <p>Перетащите карточку столбца на нужный показатель. Или выберите карточку и нажмите «Назначить» у показателя — это работает и с клавиатуры.</p>
       </div>
       <p className="column-mapping__announcement" role="status" aria-live="polite">{announcement}</p>
+      <p className="column-mapping__sensor-note">Обязательны время и счётчик. Строки без времени нельзя распределить по суткам: расчёт остановится, прежние агрегаты сохранятся. Недоступные измерения остаются NULL, а доступные рассчитываются.</p>
+      {inspection && <div className="aggregation-quality" aria-label="Доступность показателей">
+        {availability.errors.map(message => <p className="aggregation-message error" role="alert" key={message}>{message}</p>)}
+        <p><strong>Можно рассчитать по структуре:</strong> {availability.metrics.length ? availability.metrics.map(metric => METRIC_LABELS[metric]).join(', ') : 'только число показаний, если назначены время и счётчик'}.</p>
+        {availability.unavailable.length > 0 && <p><strong>Нет данных для показателей:</strong> {availability.unavailable.map(metric => METRIC_LABELS[metric]).join(', ')}. Для них будет сохранён NULL.</p>}
+        {!availability.metrics.includes('active_power_w_avg') && <p className="aggregation-message warning">Без общей мощности или всех трёх фаз полное потребление неизвестно. Отдельные фазы и остальные измерения можно агрегировать; сумма неполного набора фаз не подставляется вместо общей мощности.</p>}
+      </div>}
       <div className="column-mapping__layout">
         <aside className="column-mapping__source" aria-label="Столбцы исходной таблицы">
           <h4>Столбцы источника <span>{columns.length}</span></h4>
@@ -72,7 +81,8 @@ export default function ColumnMappingEditor({ fields, profile, inspection, onCha
                   }}
                   onDragEnd={resetDrag}
                 >
-                  <span className="column-mapping__column-heading"><strong>{column.name}</strong><span className="column-mapping__type">{column.type}</span></span>
+                  <span className="column-mapping__column-heading"><strong>{column.name}</strong><span className="column-mapping__type">{column.declared_type ?? column.type}</span></span>
+                  {column.readable === false && <span className="column-mapping__missing-note">Нет права SELECT; значение недоступно</span>}
                   {column.comment && <span className="column-mapping__comment">{column.comment}</span>}
                   <span className="column-mapping__example" title={example}>Пример: {example}</span>
                   {assignments.length > 0 && <span className="column-mapping__assigned">Назначен: {assignments.map(([, label]) => label).join(', ')}</span>}
@@ -120,8 +130,8 @@ export default function ColumnMappingEditor({ fields, profile, inspection, onCha
                 <th scope="row"><span>{label}</span><code>{field}</code>{visibility.required.has(field) && <span className="column-mapping__required">Для расчёта</span>}</th>
                 <td>
                   <div className="column-mapping__drop-zone">
-                    <input list="source-columns" aria-label={`Столбец для показателя: ${label}`} aria-invalid={visibility.missing.has(field) || undefined} aria-describedby={visibility.missing.has(field) ? `column-mapping-missing-${field}` : undefined} value={assigned ?? ''} placeholder="Перетащите столбец сюда" onChange={(event) => assign(field, event.target.value)} />
-                    {visibility.missing.has(field) && <p id={`column-mapping-missing-${field}`} className="column-mapping__missing-note">Столбец не найден в таблице. Выберите другой или уберите соответствие.</p>}
+                    <input list="source-columns" aria-label={`Столбец для показателя: ${label}`} aria-invalid={visibility.missing.has(field) || availability.invalidTypes.has(field) || undefined} aria-describedby={visibility.missing.has(field) ? `column-mapping-missing-${field}` : undefined} value={assigned ?? ''} placeholder="Перетащите столбец сюда" onChange={(event) => assign(field, event.target.value)} />
+                    {visibility.missing.has(field) && <p id={`column-mapping-missing-${field}`} className="column-mapping__missing-note">Столбец отсутствует или недоступен. Для измерения будет сохранён NULL; время и счётчик обязательны.</p>}
                     <div className="column-mapping__target-actions">
                       {selected && <button type="button" onClick={() => assign(field, selected.name)}>Назначить {selected.name}</button>}
                       {assigned && <button type="button" className="column-mapping__clear" aria-label={`Удалить соответствие: ${label}`} onClick={() => assign(field, '')}>Убрать</button>}

@@ -13,8 +13,8 @@ def table(value):
 
 def phase_total(total, phases):
     return (f"CASE WHEN {total} IS NOT NULL THEN {total} "
-            f"WHEN {' OR '.join(p + ' IS NOT NULL' for p in phases)} "
-            f"THEN {' + '.join('COALESCE(' + p + ', 0)' for p in phases)} ELSE NULL END")
+            f"WHEN {' AND '.join(p + ' IS NOT NULL' for p in phases)} "
+            f"THEN {' + '.join(phases)} ELSE NULL END")
 
 
 def phase_average(phases):
@@ -44,7 +44,9 @@ def hourly_query(source_table, normalized_source=None):
             sql.SQL("COUNT({}) FILTER (WHERE {}) AS {}").format(identifier, valid, sql.Identifier(metric + "_count")),
         ))
     return sql.SQL("""
-        WITH source_rows AS ({source_rows}), normalized AS (
+        WITH source_input AS ({source_rows}), source_rows AS (
+            SELECT ts, sensor_name, {finite_columns} FROM source_input
+        ), normalized AS (
             SELECT ts, sensor_name::text AS sensor_name, {normalized}
             FROM source_rows
             WHERE ts >= %(start)s AND ts < %(end)s AND sensor_name IS NOT NULL
@@ -58,6 +60,10 @@ def hourly_query(source_table, normalized_source=None):
         GROUP BY date_trunc('hour', ts, %(timezone)s), sensor_name
         ORDER BY bucket_start, sensor_name
     """).format(normalized=normalized,
+                 finite_columns=sql.SQL(', ').join(
+                     sql.SQL("CASE WHEN {}::text IN ('NaN','Infinity','-Infinity') THEN NULL ELSE {} END AS {}").format(
+                         sql.Identifier(field), sql.Identifier(field), sql.Identifier(field))
+                     for field in SOURCE_COLUMNS if field not in ('ts', 'sensor_name')),
                  source_rows=normalized_source or sql.SQL('SELECT * FROM {}').format(table(source_table)),
                  measures=sql.SQL(", ").join(measures))
 

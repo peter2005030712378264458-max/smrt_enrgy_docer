@@ -25,8 +25,8 @@ export default function WeekdayConsumptionHeatmap({ params, ready }) {
   }, [params, ready, page, attempt])
 
   const data = result?.data
-  const minimum = Number(data?.min_energy_kwh ?? 0)
-  const maximum = Number(data?.max_energy_kwh ?? 0)
+  const minimum = data?.min_energy_kwh ?? null
+  const maximum = data?.max_energy_kwh ?? null
 
   return (
     <article className="energy-panel energy-weekday-heatmap" aria-busy={loading}>

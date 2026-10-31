@@ -36,6 +36,7 @@ export default function DashboardOverviewPage() {
     setPeriod,
     setSelectedDate,
   } = useOutletContext()
+  const rankedDevices = topDevices.filter(device => device.energy_kwh !== null && device.energy_kwh !== undefined)
 
   return (
     <section className="energy-view active">
@@ -116,7 +117,7 @@ export default function DashboardOverviewPage() {
         <article className="energy-panel">
           <div className="energy-panel__head compact"><div><h2>Топ счетчиков</h2><p>По суммарной энергии в выбранном периоде</p></div></div>
           <div className="energy-event-list">
-            {topDevices.length ? topDevices.slice(0, 6).map((device, index) => (
+            {rankedDevices.length ? rankedDevices.slice(0, 6).map((device, index) => (
               <article className="energy-event-item" key={device.data_name}>
                 <div className="energy-event-item__time">#{index + 1}</div>
                 <div className="energy-event-item__body"><div className="energy-event-item__title">{getDeviceLabel(device)}</div><div className="energy-event-item__text">{formatNumber(device.energy_kwh, 0)} кВт·ч · максимум {formatNumber(device.max_power_kw)} кВт</div></div>
@@ -142,7 +143,7 @@ export default function DashboardOverviewPage() {
             <SummaryItem label="Коэффициент загрузки" value={formatPercent(powerStats.loadFactor)} note="средняя мощность / максимум периода" />
             <SummaryItem label="Среднее напряжение" value={`${formatNumber(summary?.avg_voltage_v)} В`} note="по доступным фазам счетчиков" />
             <SummaryItem label="Средняя частота" value={`${formatNumber(summary?.avg_frequency_hz, 2)} Гц`} note="из `frequency_hz_avg`" />
-            <SummaryItem label="Самый энергоемкий счетчик" value={topDevices[0] ? getDeviceLabel(topDevices[0]) : 'нет данных'} note={`${formatNumber(topDevices[0]?.energy_kwh, 0)} кВт·ч`} />
+            <SummaryItem label="Самый энергоемкий счетчик" value={rankedDevices[0] ? getDeviceLabel(rankedDevices[0]) : 'нет данных'} note={`${formatNumber(rankedDevices[0]?.energy_kwh, 0)} кВт·ч`} />
             <SummaryItem label="Диапазон выборки" value={formatDateTime(summary?.date_from)} note={`до ${formatDateTime(summary?.date_to)}`} />
             <SummaryItem label="Строк измерений" value={formatNumber(summary?.points, 0)} note="агрегированные записи счетчиков" />
           </div>

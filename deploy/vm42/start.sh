@@ -2,8 +2,10 @@
 set -eu
 cd "$(dirname "$0")/../.."
 if docker compose version >/dev/null 2>&1; then
+  legacy_compose=0
   compose() { docker compose -p smart-energy-vm42 --env-file deploy/vm42/.env -f docker-compose.vm42.yml "$@"; }
 else
+  legacy_compose=1
   compose() { docker-compose -p smart-energy-vm42 --env-file deploy/vm42/.env -f docker-compose.vm42.yml "$@"; }
 fi
 test -s deploy/vm42/app.env
@@ -22,6 +24,12 @@ fi
 # The database volume and existing readings remain in place.
 compose stop adapter
 compose run --rm --no-deps adapter upgrade-aggregates
+if [ "$legacy_compose" = 1 ]; then
+  # Compose v1 cannot merge ContainerConfig from newer Docker images.
+  # Recreate only application containers; keep named volumes and DB/tunnel.
+  compose stop frontend backend analytical adapter
+  compose rm -f frontend backend analytical adapter
+fi
 compose up -d --no-build
 compose exec -T adapter python -m adapter init-control
 compose ps

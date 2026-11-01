@@ -8,7 +8,7 @@ from rest_framework.views import APIView
 
 from .client import request_adapter
 
-
+# проверка permission 
 class CapabilitiesView(APIView):
     permission_classes = (IsAuthenticated,)
 
@@ -24,10 +24,12 @@ class AdapterView(APIView):
         allowed_get = r'(health|connections|tables|profiles|schedule|jobs|jobs/[0-9a-f-]{36})'
         allowed_post = r'(inspect|profiles|profiles/[0-9a-f-]{36}/activate|jobs|schedule)'
         pattern = allowed_get if request.method == 'GET' else allowed_post
+        
         if not re.fullmatch(pattern, operation):
             return Response({'detail': 'Неизвестная операция'}, status=404)
         if request.method == 'GET' and operation == 'tables':
             operation += '?' + urlencode({'connection': request.query_params.get('connection', '')})
+            
         payload = request.data if request.method == 'POST' else None
         result, status = request_adapter(request.method, operation, payload)
         return Response(result, status=status)

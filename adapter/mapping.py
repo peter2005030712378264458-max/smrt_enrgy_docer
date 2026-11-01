@@ -1,4 +1,3 @@
-"""Explicit, versionable source contracts. Suggestions never activate a profile."""
 from copy import deepcopy
 from decimal import Decimal
 import hashlib
@@ -40,7 +39,7 @@ METRIC_INPUTS = {
     'frequency_hz_avg': (('frequency',),), 'meter_temperature_avg': (('t',),),
 }
 
-
+# валидация при сохранении и запуске задания по профилю  
 def validate_profile(value):
     if not isinstance(value, dict):
         raise ValueError('Профиль должен быть JSON-объектом')
@@ -97,7 +96,7 @@ def validate_profile(value):
             raise ValueError(f'Некорректная настройка {key}')
     return value
 
-
+# вычленение колонок из таблицы с показаниями 
 def _source_columns(connection, table_name):
     schema, name = table_parts(table_name)
     columns = connection.execute('''
@@ -117,9 +116,10 @@ def _source_columns(connection, table_name):
         raise ValueError('Таблица или представление не найдены либо не содержат столбцов')
     return columns
 
-
+# возвращаем колонки таблицы + предложения по заполнению 
 def inspect_source(connection, table_name):
     schema, name = table_parts(table_name)
+    # вычленяем колонки 
     columns = _source_columns(connection, table_name)
     suggestions = {}
     for field in FIELDS:
@@ -161,11 +161,16 @@ def inspect_source(connection, table_name):
             warnings.append('Столбцы получены, но пример строк недоступен: превышено время чтения или недостаточно прав. Соответствия можно настроить по структуре.')
     else:
         warnings.append('Нет прав SELECT на столбцы источника. Структура показана, но расчёт требует доступа к времени, счётчику и выбранным измерениям.')
-    return {'columns': columns, 'suggestions': suggestions, 'sample': sample,
-            'warnings': warnings,
-            'notice': 'Единицы и семантика не определяются надёжно по названию. Подтвердите профиль.'}
+    
+    return {
+        'columns': columns, 
+        'suggestions': suggestions, 
+        'sample': sample,
+        'warnings': warnings,
+        'notice': 'Единицы и семантика не определяются надёжно по названию. Подтвердите профиль.'
+    }
 
-
+#сверяем назначения профиля с реальными доступными столбцами и их типами, определяя, какие показатели можно рассчитать
 def source_capabilities(profile, types):
     columns = profile['columns']
     for field, label in (('ts', 'время'), ('sensor_name', 'идентификатор счётчика')):
@@ -236,6 +241,6 @@ def source_cte(profile, column_types):
         sql.SQL(', ').join(expressions), sql.Identifier(*table_parts(profile['source_table'])),
         sql.Identifier(columns['ts']), start, sql.Identifier(columns['ts']), end)
 
-
+# получаем актуальные типы читаемых столбцов
 def column_types(connection, profile):
     return {c['name']: c['type'] for c in _source_columns(connection, profile['source_table']) if c['readable']}

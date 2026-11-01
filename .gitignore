@@ -15,7 +15,6 @@ build/
 staticfiles/
 
 # Local configuration
-.env
 .env.*
 !.env.example
 *.sqlite

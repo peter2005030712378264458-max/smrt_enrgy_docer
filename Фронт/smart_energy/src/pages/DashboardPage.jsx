@@ -28,6 +28,7 @@ const NAV_ITEMS = [
   { id: 'dashboard', label: 'Дашборд', path: ROUTES.dashboard },
   { id: 'links', label: 'Связи', path: ROUTES.connections },
   { id: 'analytics', label: 'Аналитика', path: ROUTES.analytics },
+  { id: 'notifications', label: 'Уведомления', path: ROUTES.notifications },
 ]
 
 function getUserName(currentUser) {

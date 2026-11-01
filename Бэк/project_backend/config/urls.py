@@ -11,4 +11,5 @@ urlpatterns = [
     path('api/consumption/', include('apps.consumption.urls')),
     # источники и агрегации 
     path('api/aggregation/', include('apps.aggregation.urls')),
+    path('api/notifications/', include('apps.notifications.urls')),
 ]

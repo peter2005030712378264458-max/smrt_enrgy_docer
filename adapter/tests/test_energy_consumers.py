@@ -193,6 +193,13 @@ def main():
     assert result.mean_kw == 2 and result.observations == 24
     check_missing_measurements(q, metadata, request, Settings, PeriodInput, fetch_period_stats)
     check_exact_metric_weights(q, metadata, Settings, PeriodInput, fetch_period_stats)
+    from apps.notifications.energy import load_days
+    days = load_days(date(2026,10,15), date(2026,10,17))
+    assert days[date(2026,10,15)]['Meter A'] is None
+    assert days[date(2026,10,16)]['Meter A'] == 72
+    with psycopg.connect(fixture.target_dsn) as connection:
+        connection.execute("UPDATE student_schema.electricity_sensor_readings_daily SET active_power_w_avg_count=NULL WHERE bucket_start='2026-10-16'")
+    assert load_days(date(2026,10,16), date(2026,10,17))[date(2026,10,16)]['Meter A'] is None
     print('Consumer SQL checks passed: summary, timeseries, top devices, room loads, heatmap, analytics, missing columns, real zero, both energy modes, exact metric weights and weekly power.')
 
 

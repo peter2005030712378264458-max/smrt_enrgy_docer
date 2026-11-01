@@ -87,6 +87,28 @@ services:
       analytical:
         condition: service_started
 
+  notifications:
+    <<: *app
+    image: smart-energy-vm42-backend
+    command: ['python', 'manage.py', 'run_notifications']
+    environment:
+      DJANGO_DEBUG: '0'
+      DJANGO_SECRET_KEY_FILE: /run/smart-energy/django_secret_key
+    volumes:
+      - vm42-django-secret:/run/smart-energy:ro
+    depends_on:
+      db:
+        condition: service_healthy
+      backend:
+        condition: service_started
+    healthcheck:
+      test: ['CMD', 'python', '-c', "import os,time; assert time.time()-os.path.getmtime('/tmp/notifications-heartbeat')<180"]
+      interval: 30s
+      timeout: 5s
+      start_period: 60s
+      retries: 3
+    stop_grace_period: 30s
+
   adapter:
     <<: *app
     image: smart-energy-vm42-adapter

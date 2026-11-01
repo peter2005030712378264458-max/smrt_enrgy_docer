@@ -93,6 +93,7 @@ INSTALLED_APPS = [
     'django.contrib.staticfiles',
     'apps.users',
     'apps.consumption',
+    'apps.notifications',
     'rest_framework',
     'rest_framework_simplejwt.token_blacklist',
     'corsheaders',
@@ -197,6 +198,17 @@ ENERGY_DEFAULT_LOOKBACK_HOURS = int(os.getenv("ENERGY_DEFAULT_LOOKBACK_HOURS", "
 ENERGY_USE_STORED_ENERGY = _env_bool('ENERGY_USE_STORED_ENERGY', False)
 ENERGY_ADAPTER_URL = os.getenv('ENERGY_ADAPTER_URL', '')
 ENERGY_ADAPTER_TOKEN = os.getenv('ENERGY_ADAPTER_TOKEN', '')
+
+# Optional notification mail transport; private credentials belong in env files.
+EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
+EMAIL_HOST = os.getenv('EMAIL_HOST', '')
+EMAIL_PORT = int(os.getenv('EMAIL_PORT', '587'))
+EMAIL_HOST_USER = os.getenv('EMAIL_HOST_USER', '')
+EMAIL_HOST_PASSWORD = os.getenv('EMAIL_HOST_PASSWORD', '')
+EMAIL_USE_TLS = _env_bool('EMAIL_USE_TLS', True)
+EMAIL_USE_SSL = _env_bool('EMAIL_USE_SSL', False)
+EMAIL_TIMEOUT = 10
+DEFAULT_FROM_EMAIL = os.getenv('DEFAULT_FROM_EMAIL', '')
 
 ANALYTICS_SERVICE_URL = os.getenv("ANALYTICS_SERVICE_URL", "http://127.0.0.1:8001")
 ANALYTICS_SERVICE_TIMEOUT_SECONDS = float(os.getenv("ANALYTICS_SERVICE_TIMEOUT_SECONDS", "10"))

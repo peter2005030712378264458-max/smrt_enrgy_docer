@@ -22,14 +22,15 @@ if [ ! -f deploy/vm42/backups/restore-complete ]; then
 fi
 # Stop the previous writer before the explicit, additive aggregate upgrade.
 # The database volume and existing readings remain in place.
-compose stop adapter
+compose stop adapter notifications
 compose run --rm --no-deps adapter upgrade-aggregates
 if [ "$legacy_compose" = 1 ]; then
   # Compose v1 cannot merge ContainerConfig from newer Docker images.
   # Recreate only application containers; keep named volumes and DB/tunnel.
-  compose stop frontend backend analytical adapter
-  compose rm -f frontend backend analytical adapter
+  compose stop frontend backend analytical adapter notifications
+  compose rm -f frontend backend analytical adapter notifications
 fi
-compose up -d --no-build
+compose up -d --no-build db source-db backend analytical adapter frontend
+compose up -d --no-build notifications
 compose exec -T adapter python -m adapter init-control
 compose ps

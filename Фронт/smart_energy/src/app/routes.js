@@ -6,6 +6,7 @@ export const ROUTES = Object.freeze({
   connections: '/connections',
   analytics: '/analytics',
   aggregation: '/aggregation',
+  notifications: '/notifications',
 })
 
 export const DASHBOARD_ROUTES = Object.freeze({
@@ -13,4 +14,5 @@ export const DASHBOARD_ROUTES = Object.freeze({
   [ROUTES.connections]: 'links',
   [ROUTES.analytics]: 'analytics',
   [ROUTES.aggregation]: 'aggregation',
+  [ROUTES.notifications]: 'notifications',
 })

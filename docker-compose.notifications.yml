@@ -1,0 +1,26 @@
+# Add to local docker-compose.yml after building its backend/frontend images.
+services:
+  notifications:
+    image: smart-energy-local-backend
+    command: [python, manage.py, run_notifications]
+    env_file:
+      - ${ANALYTICS_ENV_FILE:-./Аналитический сервис/Analytical_service/.env.example}
+      - ${BACKEND_ENV_FILE:-./Бэк/project_backend/.env.example}
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    environment:
+      RUNNING_IN_DOCKER: '1'
+      POSTGRES_HOST: ${POSTGRES_HOST:-host.docker.internal}
+      POSTGRES_PORT: ${POSTGRES_PORT:-15432}
+      DJANGO_DEBUG: '0'
+      DJANGO_SECRET_KEY_FILE: /run/smart-energy/django_secret_key
+    volumes:
+      - django-secret:/run/smart-energy:ro
+    depends_on:
+      - backend
+    healthcheck:
+      test: [CMD, python, '-c', "import os,time; assert time.time()-os.path.getmtime('/tmp/notifications-heartbeat')<180"]
+      interval: 30s
+      start_period: 60s
+      retries: 3
+    restart: unless-stopped

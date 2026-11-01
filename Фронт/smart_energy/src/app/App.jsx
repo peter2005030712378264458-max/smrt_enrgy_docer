@@ -4,6 +4,7 @@ import AnalyticsPage from '../pages/dashboard/AnalyticsPage.jsx'
 import ConnectionsPage from '../pages/dashboard/ConnectionsPage.jsx'
 import DashboardOverviewPage from '../pages/dashboard/DashboardOverviewPage.jsx'
 import AggregationPage from '../pages/aggregation/AggregationPage.jsx'
+import NotificationsPage from '../pages/notifications/NotificationsPage.jsx'
 import { Route, Routes } from 'react-router'
 import { ROUTES } from './routes.js'
 
@@ -12,6 +13,7 @@ function App() {
     <Routes>
       <Route element={<AuthPage />}>
         <Route path={ROUTES.aggregation} element={<AggregationPage />} />
+        <Route path={ROUTES.notifications} element={<NotificationsPage />} />
         <Route element={<DashboardPage />}>
           <Route path={ROUTES.dashboard} element={<DashboardOverviewPage />} />
           <Route path={ROUTES.connections} element={<ConnectionsPage />} />

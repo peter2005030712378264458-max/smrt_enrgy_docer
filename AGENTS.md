@@ -13,6 +13,8 @@ Use root `README.md` for the Docker quick start, `deploy/LOCAL_DEPLOYMENT.md` fo
 
 ## Architecture & Data Flow
 
+- `apps/notifications/` is an additive Django app with personal opt-in settings, daily report snapshots, and SMTP delivery. `run_notifications` runs in a separate Compose service using the backend image. It only reads existing daily aggregates; do not change adapter formulas or treat partial energy as a full total for alerts. A baseline uses at least 7 complete days with identical meter sets in the preceding 30 calendar days; comparison is two-sided and excludes unfinished Moscow days. Reports are unique per user/day; ambiguous SMTP submissions must not be blindly retried. SMTP secrets belong in private env files. See `NOTIFICATIONS.md`.
+
 - The browser calls Django under `/api/`; Vite proxies that prefix in development. Container Nginx terminates HTTPS, serves the SPA, and proxies `/api/`, `/admin/`, and `/static/` to Django. Django serves admin assets through WhiteNoise.
 - `/api/auth/` provides registration, login, refresh, profile, and logout. Keep access tokens in the existing in-memory auth store and refresh tokens in HttpOnly cookies. Reuse feature clients, `buildApiUrl`, and the shared refresh flow; preserve `credentials: 'include'` and the single retry after a 401.
 - `/api/consumption/dashboard/` reads PostgreSQL directly through Django SQL helpers. `/api/consumption/analytics/period-comparison/` resolves filters in Django and calls FastAPI's `/internal/analytics/period-comparison` through `httpx`; FastAPI reads hourly aggregates and performs the Z-test. It does not persist analysis results.

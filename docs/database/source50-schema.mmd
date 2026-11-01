@@ -1,0 +1,115 @@
+erDiagram
+    direction LR
+    %% Catalog snapshot: .50 / paradigm_db; 7 complete entities, 4 referenced PK-only entities.
+    PUBLIC_ELECTRICITY_SENSOR_READINGS["public.electricity_sensor_readings"] {
+        bigint id PK "NOT NULL"
+        bigint device_listid FK "NULL"
+        bigint roomid FK "NOT NULL"
+        varchar(100) sensor_name "NOT NULL"
+        timestamptz(6) ts "NULL"
+        numeric i1 "numeric(9,3); NULL"
+        numeric i2 "numeric(9,3); NULL"
+        numeric i3 "numeric(9,3); NULL"
+        numeric p1 "numeric(10,0); NULL"
+        numeric p2 "numeric(10,0); NULL"
+        numeric p3 "numeric(10,0); NULL"
+        numeric pt "numeric(10,0); NULL"
+        numeric q1 "numeric(10,0); NULL"
+        numeric q2 "numeric(10,0); NULL"
+        numeric q3 "numeric(10,0); NULL"
+        numeric qt "numeric(10,0); NULL"
+        numeric s1 "numeric(10,0); NULL"
+        numeric s2 "numeric(10,0); NULL"
+        numeric s3 "numeric(10,0); NULL"
+        numeric st "numeric(10,0); NULL"
+        numeric t "numeric(5,2); NULL"
+        numeric u1 "numeric(5,2); NULL"
+        numeric u2 "numeric(5,2); NULL"
+        numeric u3 "numeric(5,2); NULL"
+        numeric alpha1 "numeric(5,2); NULL"
+        numeric alpha2 "numeric(5,2); NULL"
+        numeric alpha3 "numeric(5,2); NULL"
+        numeric frequency "numeric(4,2); NULL"
+        numeric harmonic1 "numeric(3,2); NULL"
+        numeric harmonic2 "numeric(3,2); NULL"
+        numeric harmonic3 "numeric(3,2); NULL"
+        numeric phi1 "numeric(4,3); NULL"
+        numeric phi2 "numeric(4,3); NULL"
+        numeric phi3 "numeric(4,3); NULL"
+        numeric phit "numeric(4,3); NULL"
+        varchar(30) mark "NULL"
+        integer node_id "NOT NULL"
+        bigint feederid "NULL; no FK constraint"
+    }
+
+    PUBLIC_SENSOR_DIRECTORY["public.sensor_directory"] {
+        bigint id PK "NOT NULL"
+        bigint roomid FK "NOT NULL"
+        bigint device_listid FK "NOT NULL"
+        varchar(100) sensor_name UK "NOT NULL"
+        varchar(100) sensor_comments "NULL"
+    }
+
+    STRUCTURE_BUILDING["structure.building"] {
+        bigint id PK "NOT NULL"
+        bigint physical_addressid FK "NOT NULL"
+        varchar(100) building_name UK "NOT NULL"
+        varchar(50) building_code UK "NOT NULL"
+        varchar(5) structure_number UK "NOT NULL"
+    }
+
+    STRUCTURE_FEEDER["structure.feeder"] {
+        bigint id PK "NOT NULL"
+        varchar(100) feeder_name UK "NOT NULL"
+        varchar(255) feeder_description "NULL"
+    }
+
+    STRUCTURE_ORG_STRUCTURE["structure.org_structure"] {
+        bigint id PK "NOT NULL"
+        varchar(150) struc_name "NOT NULL"
+        varchar(255) struc_description "NULL"
+    }
+
+    STRUCTURE_ROOM["structure.room"] {
+        bigint id PK "NOT NULL"
+        bigint buildingid FK "NULL"
+        bigint org_structureid FK "NULL"
+        varchar(10) room_number "NULL"
+        varchar(255) room_description "NULL"
+        varchar(5) floor_number "NULL"
+        bigint room_typeid FK "NULL"
+        bigint sub_room_typeid FK "NULL"
+    }
+
+    STRUCTURE_ROOM_FEEDER["structure.room_feeder"] {
+        bigint roomid PK, FK "NOT NULL; composite PK"
+        bigint feederid PK, FK "NOT NULL; composite PK"
+    }
+
+    PUBLIC_DEVICE_LIST["public.device_list - reference only"] {
+        bigint id PK "NOT NULL; other columns omitted"
+    }
+
+    STRUCTURE_PHYSICAL_ADDRESS["structure.physical_address - reference only"] {
+        bigint id PK "NOT NULL; other columns omitted"
+    }
+
+    STRUCTURE_ROOM_TYPE["structure.room_type - reference only"] {
+        bigint id PK "NOT NULL; other columns omitted"
+    }
+
+    STRUCTURE_SUB_ROOM_TYPE["structure.sub_room_type - reference only"] {
+        bigint id PK "NOT NULL; other columns omitted"
+    }
+
+    PUBLIC_DEVICE_LIST |o..o{ PUBLIC_ELECTRICITY_SENSOR_READINGS : "device_listid to id"
+    STRUCTURE_ROOM ||..o{ PUBLIC_ELECTRICITY_SENSOR_READINGS : "roomid to id"
+    STRUCTURE_PHYSICAL_ADDRESS ||..o{ STRUCTURE_BUILDING : "physical_addressid to id"
+    PUBLIC_DEVICE_LIST ||..o{ PUBLIC_SENSOR_DIRECTORY : "device_listid to id"
+    STRUCTURE_ROOM ||..o{ PUBLIC_SENSOR_DIRECTORY : "roomid to id"
+    STRUCTURE_ORG_STRUCTURE |o..o{ STRUCTURE_ROOM : "org_structureid to id"
+    STRUCTURE_BUILDING |o..o{ STRUCTURE_ROOM : "buildingid to id"
+    STRUCTURE_ROOM_TYPE |o..o{ STRUCTURE_ROOM : "room_typeid to id"
+    STRUCTURE_SUB_ROOM_TYPE |o..o{ STRUCTURE_ROOM : "sub_room_typeid to id"
+    STRUCTURE_FEEDER ||--o{ STRUCTURE_ROOM_FEEDER : "feederid to id"
+    STRUCTURE_ROOM ||--o{ STRUCTURE_ROOM_FEEDER : "roomid to id"

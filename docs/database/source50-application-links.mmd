@@ -1,0 +1,18 @@
+flowchart LR
+    RAW["public.electricity_sensor_readings"]
+    DIR["public.sensor_directory"]
+    FEEDER["structure.feeder"]
+    RF["structure.room_feeder"]
+    INSTALL["structure.room: место установки счётчика"]
+    CONSUMER["structure.room: обслуживаемое помещение"]
+    BUILDING["structure.building"]
+    ORG["structure.org_structure"]
+
+    RAW -->|"ID после sensor_map проверяется по sensor_name справочника; не FK"| DIR
+    DIR -->|"roomid = id; FK"| INSTALL
+    DIR -->|"имя без суффикса Smart Meter = feeder_name; не FK"| FEEDER
+    FEEDER -->|"id = feederid; FK"| RF
+    RF -->|"roomid = id; FK"| CONSUMER
+    INSTALL -->|"buildingid = id; FK"| BUILDING
+    CONSUMER -->|"buildingid = id; FK"| BUILDING
+    CONSUMER -->|"org_structureid = id; FK"| ORG

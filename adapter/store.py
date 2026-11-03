@@ -1,6 +1,9 @@
 """Control data only. Aggregate schemas are never migrated by the service."""
 from contextlib import contextmanager
 import uuid
+import os
+import re
+from psycopg import sql
 
 import psycopg
 from psycopg.rows import dict_row
@@ -37,11 +40,15 @@ ALTER TABLE adapter_control.profiles ADD COLUMN IF NOT EXISTS signature text;
 class Store:
     def __init__(self, dsn):
         self.dsn = dsn
+        self.schema = os.environ.get('ENERGY_ADAPTER_CONTROL_SCHEMA', 'adapter_control')
+        if not re.fullmatch(r'[a-z][a-z0-9_]{0,62}', self.schema):
+            raise ValueError('Некорректная служебная схема адаптера')
 
     @contextmanager
     def connection(self):
         with psycopg.connect(self.dsn, row_factory=dict_row, connect_timeout=8) as conn:
             conn.execute("SET statement_timeout='15s'")
+            conn.execute(sql.SQL('SET LOCAL search_path TO {}, pg_catalog').format(sql.Identifier(self.schema)))
             yield conn
 
     def query(self, text, params=(), one=False):
@@ -52,16 +59,16 @@ class Store:
 
     def install(self):
         with self.connection() as conn:
-            conn.execute(DDL)
+            conn.execute(DDL.replace('adapter_control', self.schema))
 
     def profile(self, profile_id):
-        row = self.query('SELECT * FROM adapter_control.profiles WHERE id=%s', (profile_id,), one=True)
+        row = self.query('SELECT * FROM profiles WHERE id=%s', (profile_id,), one=True)
         if not row:
             raise ValueError('Профиль не найден')
         return row
 
     def job(self, job_id):
-        row = self.query('SELECT * FROM adapter_control.jobs WHERE id=%s', (job_id,), one=True)
+        row = self.query('SELECT * FROM jobs WHERE id=%s', (job_id,), one=True)
         if not row:
             raise ValueError('Задание не найдено')
         return row
@@ -70,19 +77,19 @@ class Store:
         job_id = str(uuid.uuid4())
         with self.connection() as conn:
             if kind == 'preview':
-                conn.execute('UPDATE adapter_control.profiles SET validated=false WHERE id=%s', (profile_id,))
-            return conn.execute('''INSERT INTO adapter_control.jobs(id,profile_id,kind,date_from,date_to,preview_id,slot)
+                conn.execute('UPDATE profiles SET validated=false WHERE id=%s', (profile_id,))
+            return conn.execute('''INSERT INTO jobs(id,profile_id,kind,date_from,date_to,preview_id,slot)
                 VALUES(%s,%s,%s,%s,%s,%s,%s) ON CONFLICT(slot) DO NOTHING RETURNING *''',
                 (job_id, profile_id, kind, begin, end, preview_id, slot)).fetchone()
 
     def event(self, job_id, event):
-        self.query('''UPDATE adapter_control.jobs SET events=(
+        self.query('''UPDATE jobs SET events=(
             SELECT COALESCE(jsonb_agg(value ORDER BY n),'[]'::jsonb) FROM
             (SELECT value,n FROM jsonb_array_elements(events || %s::jsonb) WITH ORDINALITY AS e(value,n)
              ORDER BY n DESC LIMIT 800) recent) WHERE id=%s''', (Jsonb([event]), job_id))
 
     def claim(self):
-        return self.query('''UPDATE adapter_control.jobs SET status='running', started_at=now(),
-            attempts=attempts+1, error=NULL WHERE id=(SELECT id FROM adapter_control.jobs
+        return self.query('''UPDATE jobs SET status='running', started_at=now(),
+            attempts=attempts+1, error=NULL WHERE id=(SELECT id FROM jobs
             WHERE status='queued' AND available_at<=now() ORDER BY created_at
             FOR UPDATE SKIP LOCKED LIMIT 1) RETURNING *''', one=True)

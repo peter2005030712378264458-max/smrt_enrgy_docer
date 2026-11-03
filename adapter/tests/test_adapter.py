@@ -373,7 +373,7 @@ class IntegrationTests(unittest.TestCase):
             job = self.store.enqueue(profile['id'], 'scheduled', date(2026, 10, 15), date(2026, 10, 16))
             original_query = self.store.query
             def fail_progress(statement, *args, **kwargs):
-                if isinstance(statement, str) and statement.startswith('UPDATE adapter_control.profiles SET processed_until'):
+                if isinstance(statement, str) and statement.startswith('UPDATE profiles SET processed_until'):
                     raise psycopg.OperationalError('simulated control disconnect')
                 return original_query(statement, *args, **kwargs)
             with patch.object(self.store, 'query', side_effect=fail_progress):

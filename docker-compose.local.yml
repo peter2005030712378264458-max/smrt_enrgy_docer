@@ -1,0 +1,111 @@
+# Local application containers; existing databases are reached through VM .42.
+x-env: &env
+  env_file: ./deploy/local/app.env
+  restart: unless-stopped
+
+services:
+  ssh:
+    image: smart-energy-ssh-tunnel
+    build: ./deploy/ssh-tunnel
+    entrypoint: [sh, /local/tunnel.sh]
+    volumes:
+      - ./deploy/local/tunnel.sh:/local/tunnel.sh:ro
+      - ./deploy/vm42/secrets/target_ssh_password:/run/secrets/ssh_password:ro
+      - ./deploy/vm42/secrets/known_hosts:/run/secrets/known_hosts:ro
+    healthcheck:
+      test: [CMD-SHELL, 'nc -z 127.0.0.1 5432 && nc -z 127.0.0.1 5433']
+      interval: 10s
+      timeout: 3s
+      retries: 6
+    restart: unless-stopped
+
+  analytical:
+    <<: *env
+    image: smart-energy-workstation-analytical
+    build: ./Аналитический сервис/Analytical_service
+    command: [uvicorn, app.main:app, --host, 0.0.0.0, --port, '8001']
+    depends_on:
+      ssh:
+        condition: service_healthy
+
+  backend:
+    <<: *env
+    image: smart-energy-workstation-backend
+    build: ./Бэк/project_backend
+    environment:
+      RUNNING_IN_DOCKER: '1'
+      DJANGO_USE_GUNICORN: '1'
+      DJANGO_DEBUG: '0'
+      DJANGO_SECRET_KEY_FILE: /run/smart-energy/django_secret_key
+      DJANGO_TRUST_PROXY_HEADERS: '1'
+      DJANGO_REFRESH_COOKIE_SECURE: '1'
+      RUN_DJANGO_MIGRATIONS: '0'
+      RUN_ENERGY_INDEXES: '0'
+      ANALYTICS_SERVICE_URL: http://analytical:8001
+      ENERGY_ADAPTER_URL: http://adapter:8002
+      GUNICORN_BIND: 0.0.0.0:5000
+    volumes:
+      - django-secret:/run/smart-energy
+    depends_on:
+      ssh:
+        condition: service_healthy
+      analytical:
+        condition: service_started
+
+  adapter:
+    <<: *env
+    image: smart-energy-workstation-adapter
+    build:
+      context: .
+      dockerfile: adapter/Dockerfile
+    environment:
+      ENERGY_ADAPTER_CONTROL_SCHEMA: adapter_workstation
+      ENERGY_ADAPTER_CONNECTIONS_FILE: /home/adapter/state/connections.enc
+      ENERGY_ADAPTER_CONNECTION_KEY_FILE: /run/secrets/connection_key
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    volumes:
+      - adapter-state:/home/adapter/state
+      - ./deploy/local/private/connection_key:/run/secrets/connection_key:ro
+    depends_on:
+      ssh:
+        condition: service_healthy
+    stop_grace_period: 150s
+
+  notifications:
+    <<: *env
+    image: smart-energy-workstation-backend
+    command: [python, manage.py, run_notifications]
+    environment:
+      DJANGO_SECRET_KEY_FILE: /run/smart-energy/django_secret_key
+    volumes:
+      - django-secret:/run/smart-energy:ro
+    depends_on:
+      backend:
+        condition: service_started
+    healthcheck:
+      test: [CMD, python, '-c', "import os,time; assert time.time()-os.path.getmtime('/tmp/notifications-heartbeat')<180"]
+      interval: 30s
+      start_period: 60s
+      retries: 3
+
+  frontend:
+    image: smart-energy-workstation-frontend
+    build:
+      context: ./Фронт/smart_energy
+      dockerfile: ../../deploy/local/Dockerfile.frontend
+    ports:
+      - '127.0.0.1:${LOCAL_HTTPS_PORT:-8443}:443'
+    environment:
+      API_PROXY_TARGET: http://backend:5000
+    volumes:
+      - ./deploy/local/private/nginx.crt:/etc/nginx/ssl/nginx.crt:ro
+      - ./deploy/local/private/nginx.key:/etc/nginx/ssl/nginx.key:ro
+    depends_on:
+      - backend
+      - adapter
+    restart: unless-stopped
+
+volumes:
+  django-secret:
+  adapter-state:

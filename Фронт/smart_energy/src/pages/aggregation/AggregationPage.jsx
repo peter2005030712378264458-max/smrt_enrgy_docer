@@ -5,6 +5,7 @@ import { ROUTES } from '../../app/routes.js'
 import { formatDateTime, formatNumber } from '../dashboard/dashboardUtils.js'
 import ThemeToggle from '../../shared/theme/ThemeToggle.jsx'
 import ColumnMappingEditor from './ColumnMappingEditor.jsx'
+import ConnectionEditor from './ConnectionEditor.jsx'
 import { mappingAvailability, METRIC_LABELS } from './mappingAvailability.js'
 import './aggregation.css'
 
@@ -88,10 +89,10 @@ export default function AggregationPage() {
   }, [refresh])
 
   useEffect(() => {
-    if (!capabilities?.can_manage || !aliases.length) return undefined
+    if (!capabilities?.can_manage) return undefined
     const timer = setInterval(() => refresh().catch((e) => setError(e.message)), 3000)
     return () => clearInterval(timer)
-  }, [aliases.length, capabilities, refresh])
+  }, [capabilities, refresh])
 
   const inspectionJob = jobs.find((job) => job.id === inspectionId)
   const inspected = inspectionJob?.events.find((event) => event.event === 'inspection')
@@ -147,6 +148,11 @@ export default function AggregationPage() {
         <nav className="aggregation-tabs" aria-label="Разделы адаптера">{[['source', 'Источник и соответствия'], ['refresh', 'Пересчёт'], ['history', 'Расписание и история']].map(([id, label]) => <button type="button" key={id} className={tab === id ? 'active' : ''} onClick={() => setTab(id)}>{label}</button>)}</nav>
         {tab === 'source' && <section className="aggregation-card">
           <h2>Профиль источника</h2>
+          <ConnectionEditor onSaved={async alias => {
+            setAliases(await aggregationRequest('connections'))
+            changeProfile('connection', alias)
+            setTables([]); setInspection(null); setInspectionId('')
+          }} />
           <label>Сохранённые версии<select value={selectedId} onChange={(e) => {
             const next = profiles.find((p) => p.id === e.target.value)
             setSelectedId(next?.id ?? '')

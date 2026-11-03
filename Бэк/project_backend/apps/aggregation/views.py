@@ -22,7 +22,7 @@ class AdapterView(APIView):
 
     def forward(self, request, operation):
         allowed_get = r'(health|connections|tables|profiles|schedule|jobs|jobs/[0-9a-f-]{36})'
-        allowed_post = r'(inspect|profiles|profiles/[0-9a-f-]{36}/activate|jobs|schedule)'
+        allowed_post = r'(connections|connections/test|inspect|profiles|profiles/[0-9a-f-]{36}/activate|jobs|schedule)'
         pattern = allowed_get if request.method == 'GET' else allowed_post
         
         if not re.fullmatch(pattern, operation):

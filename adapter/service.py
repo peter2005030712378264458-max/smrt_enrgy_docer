@@ -19,6 +19,7 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
 from .mapping import inspect_source, validate_profile
+from .connections import saved_connections, add_connection, check_connection, registry_path
 from .model import Settings, table_parts
 from .runner import refresh, RefreshError, RefreshInterrupted, fingerprint
 from .store import Store
@@ -54,9 +55,15 @@ def connections():
         if 'directory' in registry and registry['directory'] != directory_dsn:
             raise ValueError('Псевдоним directory уже задан с другим подключением')
         registry['directory'] = directory_dsn
-    if not registry or any(not isinstance(v, str) for v in registry.values()):
+    if not isinstance(registry, dict) or any(not isinstance(v, str) for v in registry.values()):
         raise ValueError('Настройте серверные подключения ENERGY_ADAPTER_CONNECTIONS')
-    return registry
+    saved = saved_connections()
+    if set(saved) & set(registry):
+        raise ValueError('Имена сохранённых и серверных подключений пересекаются')
+    merged = {**registry, **saved}
+    if not merged and registry_path() is None:
+        raise ValueError('Настройте серверные подключения ENERGY_ADAPTER_CONNECTIONS')
+    return merged
 
 
 def directory_alias(document, registry):
@@ -104,10 +111,17 @@ class Controller:
         self.store, self.registry = store, registry
 
     def dispatch(self, method, path, body):
+        if method == 'POST' and path.strip('/') in ('connections', 'connections/test'):
+            if path.strip('/') == 'connections/test':
+                alias, _ = check_connection(body)
+                return {'alias': alias, 'status': 'ok'}
+            result = add_connection(body, self.registry)
+            self.registry = {**self.registry, **saved_connections()}
+            return result
         parts = urlparse(path)
         route = parts.path.strip('/').split('/')
         if method == 'GET' and route == ['health']:
-            self.store.query('SELECT id FROM adapter_control.settings WHERE id=1')
+            self.store.query('SELECT id FROM settings WHERE id=1')
             return {'status': 'ok'}
         if method == 'GET' and route == ['connections']:
             return sorted(alias for alias in self.registry if alias != 'directory')
@@ -126,25 +140,25 @@ class Controller:
                     AND (has_table_privilege(c.oid,'SELECT') OR has_any_column_privilege(c.oid,'SELECT'))
                     ORDER BY 1 LIMIT 500''').fetchall()
         if method == 'GET' and route == ['profiles']:
-            return self.store.query("SELECT * FROM adapter_control.profiles WHERE document ? 'columns' ORDER BY created_at DESC LIMIT 100")
+            return self.store.query("SELECT * FROM profiles WHERE document ? 'columns' ORDER BY created_at DESC LIMIT 100")
         if method == 'POST' and route == ['profiles']:
             document = validate_profile(body)
             signature = fingerprint(build_settings(document, self.registry))
-            return self.store.query('INSERT INTO adapter_control.profiles(id,document,signature) VALUES(%s,%s,%s) RETURNING *',
+            return self.store.query('INSERT INTO profiles(id,document,signature) VALUES(%s,%s,%s) RETURNING *',
                                     (str(uuid.uuid4()), Jsonb(document), signature), one=True)
         if method == 'POST' and len(route) == 3 and route[0] == 'profiles' and route[2] == 'activate':
             profile = self.store.profile(route[1])
             if not profile['validated']:
                 raise ValueError('Сначала выполните успешный предварительный расчёт этого профиля')
             with self.store.connection() as conn:
-                conn.execute('SELECT * FROM adapter_control.settings WHERE id=1 FOR UPDATE')
-                conn.execute('UPDATE adapter_control.profiles SET active=false WHERE active')
-                conn.execute('UPDATE adapter_control.profiles SET active=true WHERE id=%s', (route[1],))
+                conn.execute('SELECT * FROM settings WHERE id=1 FOR UPDATE')
+                conn.execute('UPDATE profiles SET active=false WHERE active')
+                conn.execute('UPDATE profiles SET active=true WHERE id=%s', (route[1],))
             return self.store.profile(route[1])
         if route == ['schedule']:
             if method == 'GET':
-                state = self.store.query('SELECT * FROM adapter_control.settings WHERE id=1', one=True)
-                profile = self.store.query('SELECT * FROM adapter_control.profiles WHERE active', one=True)
+                state = self.store.query('SELECT * FROM settings WHERE id=1', one=True)
+                profile = self.store.query('SELECT * FROM profiles WHERE active', one=True)
                 state['active_profile'] = profile
                 state['next_run'] = (datetime.combine(datetime.now(ZoneInfo('Europe/Moscow')).date()+timedelta(days=1),
                     datetime.min.time(), ZoneInfo('Europe/Moscow')).isoformat()) if state['enabled'] else None
@@ -157,13 +171,13 @@ class Controller:
                         raise ValueError('Ожидается логическое значение')
                 if 'repeat_minutes' in body and (type(body['repeat_minutes']) is not int or not 0 <= body['repeat_minutes'] <= 1439):
                     raise ValueError('Повтор: от 0 до 1439 минут после полуночи')
-                if body.get('enabled') and not self.store.query('SELECT id FROM adapter_control.profiles WHERE active AND validated'):
+                if body.get('enabled') and not self.store.query('SELECT id FROM profiles WHERE active AND validated'):
                     raise ValueError('Нет проверенного активного профиля')
                 for key, value in body.items():
-                    self.store.query(sql.SQL('UPDATE adapter_control.settings SET {}=%s WHERE id=1').format(sql.Identifier(key)), (value,))
+                    self.store.query(sql.SQL('UPDATE settings SET {}=%s WHERE id=1').format(sql.Identifier(key)), (value,))
                 return self.dispatch('GET', '/schedule', {})
         if method == 'GET' and route == ['jobs']:
-            return self.store.query('SELECT * FROM adapter_control.jobs ORDER BY created_at DESC LIMIT 50')
+            return self.store.query('SELECT * FROM jobs ORDER BY created_at DESC LIMIT 50')
         if method == 'GET' and len(route) == 2 and route[0] == 'jobs':
             return self.store.job(route[1])
         if method == 'POST' and route == ['inspect']:
@@ -173,7 +187,7 @@ class Controller:
                 raise ValueError('Неизвестное подключение')
             table_parts(table)
             # Store an immutable inspection document, not an activatable profile.
-            profile = self.store.query('INSERT INTO adapter_control.profiles(id,document) VALUES(%s,%s) RETURNING *',
+            profile = self.store.query('INSERT INTO profiles(id,document) VALUES(%s,%s) RETURNING *',
                 (str(uuid.uuid4()), Jsonb({'connection': alias, 'source_table': table, 'name': 'Обследование'})), one=True)
             return self.store.enqueue(profile['id'], 'inspect')
         if method == 'POST' and route == ['jobs']:
@@ -229,7 +243,7 @@ def process_job(controller, job, stop_requested=None):
         if not expected_schema:
             raise ValueError('Выполните новый предварительный расчёт с проверкой доступных столбцов')
     if job['kind'] == 'preview':
-        store.query('UPDATE adapter_control.profiles SET validated=false WHERE id=%s', (job['profile_id'],))
+        store.query('UPDATE profiles SET validated=false WHERE id=%s', (job['profile_id'],))
     errors = []
     days = []
     def emit(event):
@@ -239,7 +253,7 @@ def process_job(controller, job, stop_requested=None):
             if job['kind'] == 'scheduled':
                 # Advance only contiguous, successfully committed automatic days.
                 next_day = date.fromisoformat(event['date'])+timedelta(days=1)
-                store.query('UPDATE adapter_control.profiles SET processed_until=%s WHERE id=%s AND (processed_until IS NULL OR processed_until=%s)',
+                store.query('UPDATE profiles SET processed_until=%s WHERE id=%s AND (processed_until IS NULL OR processed_until=%s)',
                             (next_day, job['profile_id'], date.fromisoformat(event['date'])))
         store.event(job['id'], clean_json(event))
     refresh(settings, start=job['date_from'], end=job['date_to'], apply=job['kind'] in ('apply', 'scheduled'),
@@ -250,7 +264,7 @@ def process_job(controller, job, stop_requested=None):
     if not days:
         raise RefreshError('В диапазоне нет завершённых суток; запись не выполнялась')
     if job['kind'] == 'preview':
-        store.query('UPDATE adapter_control.profiles SET validated=true WHERE id=%s', (job['profile_id'],))
+        store.query('UPDATE profiles SET validated=true WHERE id=%s', (job['profile_id'],))
 
 
 def worker(controller, stop):
@@ -258,15 +272,17 @@ def worker(controller, stop):
     while not stop.is_set():
         try:
             with psycopg.connect(controller.store.dsn, autocommit=True, row_factory=dict_row, connect_timeout=8) as leader:
-                if not leader.execute('SELECT pg_try_advisory_lock(482019771) AS acquired').fetchone()['acquired']:
+                if not leader.execute('SELECT pg_try_advisory_lock(482019771) AS acquired' if controller.store.schema == 'adapter_control'
+                    else 'SELECT pg_try_advisory_lock(hashtextextended(%s,482019771)) AS acquired',
+                    () if controller.store.schema == 'adapter_control' else (controller.store.schema,)).fetchone()['acquired']:
                     stop.wait(5)
                     continue
-                controller.store.query("UPDATE adapter_control.jobs SET status='queued', error='Возобновлено после перезапуска' WHERE status='running'")
+                controller.store.query("UPDATE jobs SET status='queued', error='Возобновлено после перезапуска' WHERE status='running'")
                 while not stop.is_set():
                     leader.execute('SELECT 1')
-                    state = controller.store.query('SELECT * FROM adapter_control.settings WHERE id=1', one=True)
+                    state = controller.store.query('SELECT * FROM settings WHERE id=1', one=True)
                     if state['enabled']:
-                        profile = controller.store.query('SELECT * FROM adapter_control.profiles WHERE active AND validated', one=True)
+                        profile = controller.store.query('SELECT * FROM profiles WHERE active AND validated', one=True)
                         if profile:
                             for begin, end, slot in schedule_ranges(profile, datetime.now(timezone.utc), state['repeat_minutes']):
                                 controller.store.enqueue(profile['id'], 'scheduled', begin, end, slot=slot)
@@ -276,15 +292,15 @@ def worker(controller, stop):
                         continue
                     try:
                         process_job(controller, job, stop.is_set)
-                        controller.store.query("UPDATE adapter_control.jobs SET status='succeeded',finished_at=now() WHERE id=%s", (job['id'],))
+                        controller.store.query("UPDATE jobs SET status='succeeded',finished_at=now() WHERE id=%s", (job['id'],))
                     except Exception as exc:
                         if isinstance(exc, RefreshInterrupted):
-                            controller.store.query("UPDATE adapter_control.jobs SET status='queued',attempts=attempts-1,error=%s WHERE id=%s", (str(exc), job['id']))
+                            controller.store.query("UPDATE jobs SET status='queued',attempts=attempts-1,error=%s WHERE id=%s", (str(exc), job['id']))
                             continue
                         retry = job['kind'] == 'scheduled' and job['attempts'] < 5 and isinstance(exc, (psycopg.Error, RefreshError))
                         message = ('Ошибка PostgreSQL; проверьте доступность, права и структуру' if isinstance(exc, psycopg.Error)
                                    else str(exc) if isinstance(exc, (ValueError, RefreshError)) else 'Внутренняя ошибка задания')
-                        controller.store.query('''UPDATE adapter_control.jobs SET status=%s,error=%s,finished_at=now(),
+                        controller.store.query('''UPDATE jobs SET status=%s,error=%s,finished_at=now(),
                             available_at=now()+interval '5 minutes' WHERE id=%s''', ('queued' if retry else 'failed', message, job['id']))
                         LOG.error('job=%s status=%s error=%s', job['id'], 'retry' if retry else 'failed', message)
         except Exception:
@@ -299,7 +315,7 @@ def serve():
     store = Store(os.environ.get('ENERGY_ADAPTER_CONTROL_DSN') or os.environ['ENERGY_AGG_TARGET_DSN'])
     controller = Controller(store, connections())
     # Installation is intentionally explicit, not performed on startup.
-    version = store.query('SELECT schema_version FROM adapter_control.settings WHERE id=1', one=True)
+    version = store.query('SELECT schema_version FROM settings WHERE id=1', one=True)
     if not version or version['schema_version'] != 1:
         raise ValueError('Неподдерживаемая версия служебной схемы')
     stop = threading.Event()

@@ -81,3 +81,10 @@
 .column-mapping__required { display: inline-block; margin-top: 6px; padding: 2px 6px; border-radius: 5px; font-size: 10px; font-weight: 500; color: var(--chart-primary, #2879b9); background: var(--accent-soft, #1482a518); }
 .column-mapping__target.is-missing .column-mapping__drop-zone { border-color: var(--danger, #c83d51); }
 .aggregation-page .column-mapping__missing-note { margin: 6px 0 0; color: var(--danger, #c83d51); font-size: 12px; }
+
+.aggregation-connection-dialog { box-sizing: border-box; width: min(900px, calc(100vw - 32px)); max-height: calc(100dvh - 48px); overflow-y: auto; border: 1px solid var(--border, #cad6e4); border-radius: 18px; padding: 24px; color: var(--text-primary, #20304a); background: var(--surface-elevated, #fff); box-shadow: 0 24px 80px #0005; }
+.aggregation-connection-dialog::backdrop { background: #071628aa; }
+.aggregation-connection-dialog__header { display: flex; justify-content: space-between; align-items: center; gap: 16px; }
+.aggregation-connection-dialog__header h2 { margin: 0; }
+.aggregation-connection-dialog__header button { flex-shrink: 0; }
+.aggregation-connection-dialog > p { line-height: 1.6; }

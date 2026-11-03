@@ -1,13 +1,20 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { aggregationRequest } from '../../features/aggregation/api/aggregationApi.js'
 
 const initial = { alias: '', host: '', port: '5432', database: '', user: '', password: '', sslmode: 'prefer' }
 
-export default function ConnectionEditor({ onSaved }) {
+export default function ConnectionEditor({ onSaved, onClose }) {
+  const dialogRef = useRef(null)
   const [draft, setDraft] = useState(initial)
   const [busy, setBusy] = useState(false)
   const [message, setMessage] = useState('')
   const [error, setError] = useState('')
+  useEffect(() => {
+    const dialog = dialogRef.current
+    dialog.showModal()
+    return () => dialog.close()
+  }, [])
+
   function change(key, value) {
     setDraft(current => ({ ...current, [key]: value }))
     setMessage(''); setError('')
@@ -20,12 +27,17 @@ export default function ConnectionEditor({ onSaved }) {
       if (save) {
         setDraft(initial)
         await onSaved(result.alias)
-        setMessage('Подключение проверено и сохранено. Выберите таблицу и настройте соответствия.')
       } else setMessage('PostgreSQL доступен. Проверка выполнена в режиме чтения.')
     } catch (e) { setError(e.message) } finally { setBusy(false) }
   }
-  return <details className="aggregation-connection">
-    <summary>Добавить подключение PostgreSQL</summary>
+  return <dialog ref={dialogRef} className="aggregation-connection-dialog" aria-labelledby="connection-dialog-title" onCancel={event => {
+    if (busy) event.preventDefault()
+    else onClose()
+  }}>
+    <div className="aggregation-connection-dialog__header">
+      <h2 id="connection-dialog-title">Новое подключение PostgreSQL</h2>
+      <button type="button" disabled={busy} onClick={onClose} aria-label="Закрыть окно подключения">✕</button>
+    </div>
     <p>Адрес должен быть доступен из контейнера адаптера. Для базы на вашем компьютере используйте host.docker.internal. Пароль хранится в зашифрованном серверном реестре отдельно от профиля.</p>
     <form onSubmit={event => { event.preventDefault(); submit(true) }}>
       <div className="aggregation-grid">
@@ -45,8 +57,9 @@ export default function ConnectionEditor({ onSaved }) {
       {message && <p className="aggregation-message" role="status">{message}</p>}
       <div className="aggregation-actions">
         <button type="button" disabled={busy} onClick={() => submit(false)}>Проверить подключение</button>
+        <button type="button" disabled={busy} onClick={onClose}>Отмена</button>
         <button type="submit" disabled={busy}>{busy ? 'Подключение…' : 'Проверить и сохранить'}</button>
       </div>
     </form>
-  </details>
+  </dialog>
 }

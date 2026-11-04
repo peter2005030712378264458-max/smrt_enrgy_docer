@@ -120,6 +120,9 @@ class Controller:
             return result
         parts = urlparse(path)
         route = parts.path.strip('/').split('/')
+        if method == 'GET' and route == ['live-hours']:
+            from .live import live_hours
+            return live_hours(self)
         if method == 'GET' and route == ['health']:
             self.store.query('SELECT id FROM settings WHERE id=1')
             return {'status': 'ok'}

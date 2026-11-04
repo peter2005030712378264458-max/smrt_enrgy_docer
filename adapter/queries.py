@@ -30,7 +30,7 @@ EXPRESSIONS = dict(zip(METRICS, (
 )))
 
 
-def hourly_query(source_table, normalized_source=None):
+def hourly_query(source_table, normalized_source=None, *, include_quality=False):
     # Normalize source values to numeric before transporting aggregate statistics.
     normalized = sql.SQL(", ").join(sql.SQL("({})::numeric AS {}").format(sql.SQL(expression), sql.Identifier(metric))
                                     for metric, expression in EXPRESSIONS.items())
@@ -43,6 +43,8 @@ def hourly_query(source_table, normalized_source=None):
             sql.SQL("SUM({}) FILTER (WHERE {}) AS {}").format(identifier, valid, sql.Identifier(metric + "_sum")),
             sql.SQL("COUNT({}) FILTER (WHERE {}) AS {}").format(identifier, valid, sql.Identifier(metric + "_count")),
         ))
+    if include_quality:
+        measures.append(sql.SQL('COUNT(DISTINCT ts) AS unique_points_count'))
     # Compute each row's metrics once for SUM/COUNT/MAX. PostgreSQL 13 would
     # otherwise inline and repeat the same normalization for each aggregate.
     return sql.SQL("""

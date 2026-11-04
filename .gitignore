@@ -36,3 +36,9 @@ deploy/vm42/.restore-complete
 # Workstation private configuration
 deploy/local/app.env
 deploy/local/private/
+
+# Test artifacts
+coverage/
+.coverage*
+playwright-report/
+test-results/

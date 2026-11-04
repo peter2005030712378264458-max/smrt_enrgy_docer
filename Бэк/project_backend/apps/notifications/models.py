@@ -6,6 +6,13 @@ class NotificationPreference(models.Model):
     user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
     enabled = models.BooleanField(default=False)
     threshold_percent = models.DecimalField(max_digits=7, decimal_places=2, default=30)
+    baseline_config = models.JSONField(default=dict, db_default={})
+    rule_enabled = models.BooleanField(default=False, db_default=False)
+
+    @property
+    def effective_enabled(self):
+        return self.rule_enabled if self.baseline_config else self.enabled
+
     monitor_from = models.DateField(null=True, blank=True)
     last_processed = models.DateField(null=True, blank=True)
     last_check_at = models.DateTimeField(null=True, blank=True)
@@ -24,6 +31,9 @@ class DailyConsumptionReport(models.Model):
     meter_count = models.PositiveIntegerField(default=0)
     baseline_dates = models.JSONField(default=list)
     explanation = models.TextField(blank=True)
+    configuration_key = models.CharField(max_length=64, default='', db_default='')
+    baseline_snapshot = models.JSONField(default=dict, db_default={})
+    delivery_snapshot = models.JSONField(default=dict, db_default={})
     email_status = models.CharField(max_length=20, default='not_required')
     email_to = models.EmailField(blank=True)
     email_attempts = models.PositiveSmallIntegerField(default=0)
@@ -35,4 +45,4 @@ class DailyConsumptionReport(models.Model):
 
     class Meta:
         ordering = ['-day', '-id']
-        constraints = [models.UniqueConstraint(fields=['user', 'day'], name='notifications_user_day_unique')]
+        constraints = [models.UniqueConstraint(fields=['user', 'day', 'configuration_key'], name='notifications_user_day_rule_unique')]

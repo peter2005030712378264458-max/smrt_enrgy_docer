@@ -4,7 +4,7 @@
 .notifications-header h1 { margin: 14px 0 8px; }
 .notifications-card { margin: 24px 0; padding: 24px; border: 1px solid var(--border); border-radius: 18px; background: var(--surface-elevated); }
 .notifications-page p { line-height: 1.6; }
-.notifications-page button, .notifications-page input { font: inherit; color: inherit; background: var(--surface-elevated); border: 1px solid var(--border); border-radius: 8px; padding: 10px 14px; }
+.notifications-page button, .notifications-page input, .notifications-page select { font: inherit; color: inherit; background: var(--surface-elevated); border: 1px solid var(--border); border-radius: 8px; padding: 10px 14px; }
 .notifications-page button { cursor: pointer; }
 .notifications-page button:disabled { opacity: .5; cursor: default; }
 .notifications-toggle { display: flex; align-items: center; gap: 10px; margin: 20px 0; }
@@ -19,3 +19,17 @@
 .notifications-status.critical { color: #c74040; }
 .notifications-pagination { display: flex; flex-wrap: wrap; align-items: center; gap: 16px; margin-top: 20px; }
 @media (max-width: 640px) { .notifications-page { padding: 16px; } .notifications-card { padding: 16px; } }
+
+.notifications-controls { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(240px, 100%), 1fr)); gap: 18px; margin: 20px 0; }
+.notifications-controls label { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.notifications-controls input, .notifications-controls select { box-sizing: border-box; width: 100%; min-width: 0; }
+.notifications-actions { display: flex; gap: 12px; flex-wrap: wrap; margin: 20px 0; }
+.notifications-summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
+.notification-curve { width: 100%; min-width: 0; height: 320px; margin: 24px 0; }
+.notification-preview.stale { opacity: .65; }
+.notification-anomaly { background: #c7404010; }
+.notifications-page details { margin: 16px 0; }
+.notifications-page summary { cursor: pointer; }
+
+.notifications-table table { min-width: 760px; }
+.notifications-table th, .notifications-table td:first-child { white-space: nowrap; }

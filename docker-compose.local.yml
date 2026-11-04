@@ -60,6 +60,7 @@ services:
       dockerfile: adapter/Dockerfile
     environment:
       ENERGY_ADAPTER_CONTROL_SCHEMA: adapter_workstation
+      ENERGY_NOTIFICATION_FALLBACK_SCHEMA: adapter_control
       ENERGY_ADAPTER_CONNECTIONS_FILE: /home/adapter/state/connections.enc
       ENERGY_ADAPTER_CONNECTION_KEY_FILE: /run/secrets/connection_key
     extra_hosts:

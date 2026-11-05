@@ -1,0 +1,10 @@
+node_modules
+dist
+frontend-dist.tar.gz
+.env
+.env.*
+*.log
+
+coverage
+test-results
+playwright-report

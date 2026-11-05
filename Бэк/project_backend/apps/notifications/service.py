@@ -11,11 +11,26 @@ from django.utils import timezone
 
 from .energy import BASELINE_DAYS, evaluate, load_days
 from .models import DailyConsumptionReport, NotificationPreference
+from .curve import rule_key
 
 LOG = logging.getLogger(__name__)
 
 
 def message_text(report):
+    if report.baseline_snapshot:
+        snapshot = report.baseline_snapshot
+        rule = snapshot['rule']
+        methods = {'mean':'среднее','median':'медиана','linear':'линейный тренд'}
+        readings = '\n'.join(f"{point['time']}: факт {point['actual_kwh']} кВт·ч, ожидается {point['expected_kwh']} кВт·ч"
+                              for point in snapshot.get('curve',[]) if point['anomaly'])
+        period = (f"диапазон {rule['date_from']} — {rule['date_to']}" if rule['window_mode']=='range' else f"N={rule['history_days']}")
+        hours = ', '.join(f"{h:02}:00" for h in snapshot.get('anomaly_hours',[]))
+        return (f"Smart Energy: отклонение от почасовой кривой за {report.day:%d.%m.%Y}\n"
+                f"Метод: {methods[rule['method']]}; {period}; режим: {rule['mode']}\n"
+                f"Порог: {report.threshold_percent}%; абсолютный порог: {rule['absolute_threshold']} кВт·ч\n"
+                f"Часы отклонений: {hours}\n{readings}\n{report.explanation}\n"
+                "Подробные значения и даты базы сравнения сохранены на странице уведомлений.")
+
     deviation = (f'{report.deviation_percent:+.2f}%' if report.deviation_percent is not None
                  else 'процент не определён при нулевом среднем')
     return (f'Smart Energy: критическое отклонение суточного потребления\n\n'
@@ -37,7 +52,10 @@ def deliver_report(report_id):
     with transaction.atomic():
         preference = NotificationPreference.objects.select_for_update().select_related('user').get(user_id=owner)
         report = DailyConsumptionReport.objects.select_for_update().get(pk=report_id)
-        if not preference.enabled or not preference.user.is_active or report.status != 'critical':
+        if not preference.effective_enabled or not preference.user.is_active or report.status != 'critical':
+            return
+        expected_key = rule_key(preference.baseline_config,preference.threshold_percent) if preference.baseline_config else ''
+        if report.configuration_key != expected_key:
             return
         if report.email_status not in ('pending', 'failed') or report.email_attempts >= 5:
             return
@@ -61,6 +79,8 @@ def deliver_report(report_id):
             return
         # Persist the in-flight state before SMTP submission. A crash during
         # submission must not blindly resend a possibly accepted message.
+        if report.baseline_snapshot and not report.delivery_snapshot:
+            report.delivery_snapshot = report.baseline_snapshot
         report.email_status = 'sending'
         report.email_attempts += 1
         report.email_error = ''
@@ -74,7 +94,8 @@ def deliver_report(report_id):
         # Recheck enabled immediately before sending; hold lock through SMTP.
         with transaction.atomic():
             preference = NotificationPreference.objects.select_for_update().select_related('user').get(user_id=owner)
-            if not preference.enabled or not preference.user.is_active:
+            current_key = rule_key(preference.baseline_config,preference.threshold_percent) if preference.baseline_config else ''
+            if not preference.effective_enabled or not preference.user.is_active or current_key != report.configuration_key:
                 DailyConsumptionReport.objects.filter(pk=report_id).update(email_status='pending')
                 return
             message.to = [preference.user.email]
@@ -94,14 +115,14 @@ def deliver_report(report_id):
             LOG.warning('SMTP connection close failed')
 
 
-def run_cycle(now=None):
+def _run_legacy_cycle(now=None):
     now = now or timezone.now()
     today = now.astimezone(ZoneInfo('Europe/Moscow')).date()
     # In-flight messages left by an interrupted worker are deliberately not
     # retried. SMTP cannot guarantee exactly-once delivery after a disconnect.
     DailyConsumptionReport.objects.filter(email_status='sending', updated_at__lt=now-timedelta(minutes=5)).update(
         email_status='unknown', email_error='Процесс отправки был прерван; статус доставки неизвестен.')
-    preferences = NotificationPreference.objects.filter(enabled=True, user__is_active=True).select_related('user')
+    preferences = NotificationPreference.objects.filter(enabled=True, baseline_config={}, user__is_active=True).select_related('user')
     cache = {}
     for snapshot in preferences:
         first = max(snapshot.monitor_from or today-timedelta(days=1),
@@ -136,3 +157,10 @@ def run_cycle(now=None):
     for report_id in DailyConsumptionReport.objects.filter(user__notificationpreference__enabled=True,
             user__is_active=True, status='critical', email_status__in=['pending', 'failed']).values_list('pk', flat=True):
         deliver_report(report_id)
+
+
+def run_cycle(now=None):
+    now = now or timezone.now()
+    _run_legacy_cycle(now)
+    from .curve_service import run_curve_cycle
+    run_curve_cycle(now)

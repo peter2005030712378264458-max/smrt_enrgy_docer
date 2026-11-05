@@ -5,6 +5,7 @@ import { ROUTES } from '../../app/routes.js'
 import { formatDateTime, formatNumber } from '../dashboard/dashboardUtils.js'
 import ThemeToggle from '../../shared/theme/ThemeToggle.jsx'
 import ColumnMappingEditor from './ColumnMappingEditor.jsx'
+import ConnectionEditor from './ConnectionEditor.jsx'
 import { mappingAvailability, METRIC_LABELS } from './mappingAvailability.js'
 import './aggregation.css'
 
@@ -41,6 +42,7 @@ function moscowDate(offset = 0) {
 export default function AggregationPage() {
   const [capabilities, setCapabilities] = useState(null)
   const [aliases, setAliases] = useState([])
+  const [addingConnection, setAddingConnection] = useState(false)
   const [tables, setTables] = useState([])
   const [profiles, setProfiles] = useState([])
   const [jobs, setJobs] = useState([])
@@ -88,10 +90,10 @@ export default function AggregationPage() {
   }, [refresh])
 
   useEffect(() => {
-    if (!capabilities?.can_manage || !aliases.length) return undefined
+    if (!capabilities?.can_manage) return undefined
     const timer = setInterval(() => refresh().catch((e) => setError(e.message)), 3000)
     return () => clearInterval(timer)
-  }, [aliases.length, capabilities, refresh])
+  }, [capabilities, refresh])
 
   const inspectionJob = jobs.find((job) => job.id === inspectionId)
   const inspected = inspectionJob?.events.find((event) => event.event === 'inspection')
@@ -156,7 +158,14 @@ export default function AggregationPage() {
           }}><option value="">Новая версия</option>{profiles.filter((p) => p.document.columns).map((p) => <option key={p.id} value={p.id}>{p.document.name} · {p.id.slice(0, 8)}{p.active ? ' · активен' : ''}{p.validated ? ' · проверен' : ''}</option>)}</select></label>
           <div className="aggregation-grid">
             <label>Название<input value={profile.name} onChange={(e) => changeProfile('name', e.target.value)} /></label>
-            <label>Подключение<select value={profile.connection} onChange={(e) => { changeProfile('connection', e.target.value); setTables([]); setInspectionId(''); setInspection(null) }}><option value="">Выберите подключение</option>{aliases.map((alias) => <option key={alias}>{alias}</option>)}</select></label>
+            <label>Подключение<select value={profile.connection} onChange={(e) => {
+              if (e.target.value === '__add_connection__') {
+                setAddingConnection(true)
+                return
+              }
+              changeProfile('connection', e.target.value)
+              setTables([]); setInspectionId(''); setInspection(null)
+            }}><option value="">Выберите подключение</option>{aliases.map((alias) => <option key={alias}>{alias}</option>)}<option value="__add_connection__">＋ Добавить подключение…</option></select></label>
             <label>Таблица<input list="source-tables" value={profile.source_table} onChange={(e) => { changeProfile('source_table', e.target.value); setInspectionId(''); setInspection(null) }} placeholder="schema.table" /><datalist id="source-tables">{tables.map((table) => <option key={table.name} value={table.name} />)}</datalist></label>
             <label>Часовой пояс исходных timestamp<input value={profile.source_timezone} onChange={(e) => changeProfile('source_timezone', e.target.value)} /></label>
             <label>Интервал измерений, секунд<input type="number" min="0.001" step="any" value={profile.sample_seconds} onChange={(e) => changeProfile('sample_seconds', Number(e.target.value))} /></label>
@@ -190,6 +199,13 @@ export default function AggregationPage() {
           <label className="aggregation-check"><input type="checkbox" checked={replaceConfirmed} onChange={(e) => setReplaceConfirmed(e.target.checked)} />Результаты проверены, существующие агрегаты выбранных дней можно заменить</label><button disabled={busy || !preview || !replaceConfirmed} onClick={() => action(() => submitJob('apply'))}>Записать агрегаты</button>
         </section>}
         {tab === 'history' && <section className="aggregation-card"><h2>Ежедневная обработка</h2><p>В 00:00 по Москве — предыдущие завершённые сутки. После простоя — пропущенные дни.</p><p>Активный профиль: {schedule?.active_profile?.document.name ?? 'Не выбран'} · Обработано до: {schedule?.active_profile?.processed_until ?? 'Ещё не запускалось'} (не включая)</p><p>Следующий основной запуск: {schedule?.next_run ? formatDateTime(schedule.next_run) : 'Расписание выключено'}</p><div className="aggregation-actions"><button disabled={busy || !schedule || (!schedule.enabled && !schedule.active_profile)} onClick={() => action(async () => { await aggregationRequest('schedule', { enabled: !schedule.enabled }) })}>{schedule?.enabled ? 'Выключить расписание' : 'Включить расписание'}</button><label>Повтор вчерашнего дня, минут после 00:00 (0 — выключен)<input type="number" min="0" max="1439" value={repeatDraft ?? schedule?.repeat_minutes ?? 15} onChange={(e) => setRepeatDraft(Number(e.target.value))} /></label><button disabled={busy || !schedule} onClick={() => action(async () => { await aggregationRequest('schedule', { repeat_minutes: repeatDraft ?? schedule.repeat_minutes }); setRepeatDraft(null) })}>Сохранить время повтора</button></div><p>При включении после простоя обработка может начаться сразу. Пустой или неполный источник останавливает запись; ошибки видны ниже.</p></section>}
+        {addingConnection && <ConnectionEditor onClose={() => setAddingConnection(false)} onSaved={async alias => {
+          setAliases(await aggregationRequest('connections'))
+          changeProfile('connection', alias)
+          setTables([]); setInspection(null); setInspectionId('')
+          setAddingConnection(false)
+          setNotice('Подключение сохранено и выбрано. Выберите таблицу и настройте соответствия.')
+        }} />}
         <section className="aggregation-card"><h2>Задания</h2><div className="aggregation-table-scroll"><table><thead><tr><th>Создано</th><th>Операция / период</th><th>Состояние</th><th>Результат</th></tr></thead><tbody>{jobs.map((job) => {
           const days = job.events.filter((event) => event.event === 'day')
           return <tr key={job.id}><td><button className="aggregation-link" onClick={() => setFocusedJob(job.id)}>{formatDateTime(job.created_at)}</button></td><td>{KIND[job.kind]}<br />{job.date_from} {job.date_to && `→ ${job.date_to}`}</td><td>{job.status === 'succeeded' && qualityWarnings(job).length ? 'Готово с предупреждениями' : STATUS[job.status]}</td><td>{days.length ? `${days.length} дн., ${days.reduce((n, d) => n + d.hourly_rows, 0)} часовых строк` : job.error ?? '—'}</td></tr>

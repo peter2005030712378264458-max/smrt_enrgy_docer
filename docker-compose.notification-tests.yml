@@ -1,0 +1,28 @@
+services:
+  db:
+    image: postgres:13-alpine
+    environment:
+      POSTGRES_PASSWORD: notification-test-only
+    tmpfs: [/var/lib/postgresql/data]
+    networks:
+      default:
+        aliases: [smart-energy-notification-test-db]
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U postgres']
+      interval: 2s
+      retries: 30
+  tests:
+    image: smart-energy-notification-tests
+    build: ./Бэк/project_backend
+    environment:
+      DJANGO_SETTINGS_MODULE: config.test_notifications
+      DJANGO_DEBUG: '1'
+      POSTGRES_HOST: smart-energy-notification-test-db
+      POSTGRES_PORT: '5432'
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: notification-test-only
+      DJANGO_POSTGRES_DB: postgres
+    command: [python, manage.py, test, apps.notifications, apps.aggregation, apps.consumption, apps.users, -v, '1']
+    depends_on:
+      db:
+        condition: service_healthy

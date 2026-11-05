@@ -4,7 +4,7 @@ COPY adapter/requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 COPY adapter/*.py /app/adapter/
 COPY adapter/profiles /app/adapter/profiles
-RUN useradd --create-home adapter
+RUN useradd --create-home adapter && mkdir -p /home/adapter/state && chown adapter:adapter /home/adapter/state
 USER adapter
 ENV PYTHONUNBUFFERED=1
 EXPOSE 8002

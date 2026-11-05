@@ -62,3 +62,18 @@ class StoredEnergyTests(SimpleTestCase):
     @override_settings(ENERGY_USE_STORED_ENERGY=False)
     def test_rollback_switch_keeps_legacy_energy(self):
         self.assertIn('active_power_w_avg', dashboard_queries._bucket_energy_sql('hour'))
+
+
+class ConnectionAccessTests(SimpleTestCase):
+    @patch("apps.aggregation.views.request_adapter")
+    def test_connection_management_requires_staff(self, adapter):
+        client = APIClient()
+        payload = {"alias": "new-db", "host": "db", "password": "test-only"}
+        self.assertEqual(client.post("/api/aggregation/connections/", payload, format="json").status_code, 401)
+        client.force_authenticate(user=SimpleNamespace(is_authenticated=True, is_active=True, is_staff=False))
+        self.assertEqual(client.post("/api/aggregation/connections/test/", payload, format="json").status_code, 403)
+        adapter.assert_not_called()
+        client.force_authenticate(user=SimpleNamespace(is_authenticated=True, is_active=True, is_staff=True))
+        adapter.return_value = ({"alias": "new-db", "status": "ok"}, 200)
+        self.assertEqual(client.post("/api/aggregation/connections/test/", payload, format="json").status_code, 200)
+        adapter.assert_called_once_with("POST", "connections/test", payload)

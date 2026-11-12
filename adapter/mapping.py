@@ -46,7 +46,7 @@ def validate_profile(value):
     value = deepcopy(value)
     allowed = {'name', 'connection', 'source_table', 'columns', 'scales', 'timezone', 'source_timezone',
                'sample_seconds', 'sensor_map', 'directory_connection', 'directory_table', 'directory_column',
-               'confirmed', 'quality'}
+               'confirmed', 'quality', 'window_seconds'}
     if set(value) - allowed:
         raise ValueError('Неизвестные настройки профиля')
     if value.get('confirmed') is not True:
@@ -76,6 +76,9 @@ def validate_profile(value):
     sample = Decimal(str(value.get('sample_seconds', 0)))
     if not sample.is_finite() or sample <= 0 or sample > 86400:
         raise ValueError('Укажите подтверждённый интервал измерений в секундах')
+    if type(value.get('window_seconds', 10)) is not int or value.get('window_seconds', 10) != 10:
+        raise ValueError('Шаг расчёта должен быть равен 10 секундам')
+    value.setdefault('window_seconds', 10)
     mapping = value.get('sensor_map', {})
     if not isinstance(mapping, dict) or any(not isinstance(k, str) or not isinstance(v, str) or not v for k, v in mapping.items()):
         raise ValueError('sensor_map должен связывать исходные ID с именами справочника')

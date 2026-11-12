@@ -42,6 +42,18 @@ class AggregationAccessTests(SimpleTestCase):
         self.user(True)
         self.assertEqual(self.client.get('/api/aggregation/jobs/').status_code, 503)
 
+    @patch('apps.aggregation.views.request_adapter')
+    def test_day_results_remain_staff_only_and_encode_profile(self, adapter):
+        self.assertEqual(self.client.get('/api/aggregation/day-results/').status_code, 401)
+        self.user()
+        self.assertEqual(self.client.get('/api/aggregation/day-results/').status_code, 403)
+        adapter.assert_not_called()
+        self.user(True)
+        adapter.return_value = ([], 200)
+        response = self.client.get('/api/aggregation/day-results/', {'profile_id':'p & next'})
+        self.assertEqual(response.status_code, 200)
+        adapter.assert_called_once_with('GET', 'day-results?profile_id=p+%26+next', None)
+
 
 @override_settings(ENERGY_USE_STORED_ENERGY=True)
 class StoredEnergyTests(SimpleTestCase):

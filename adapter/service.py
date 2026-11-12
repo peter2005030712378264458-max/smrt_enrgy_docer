@@ -21,7 +21,7 @@ from psycopg.types.json import Jsonb
 from .mapping import inspect_source, validate_profile
 from .connections import saved_connections, add_connection, check_connection, registry_path
 from .model import Settings, table_parts
-from .runner import refresh, RefreshError, RefreshInterrupted, fingerprint
+from .runner import refresh, RefreshError, RefreshInterrupted, fingerprint, directory_signature
 from .store import Store
 
 LOG = logging.getLogger('adapter')
@@ -91,14 +91,17 @@ def directory_names(document, registry):
     with psycopg.connect(dsn, autocommit=True, row_factory=dict_row, connect_timeout=8) as conn:
         conn.execute("SET default_transaction_read_only=on")
         conn.execute("SET statement_timeout='15s'")
-        return {str(row['name']) for row in conn.execute(sql.SQL('SELECT {}::text AS name FROM {}').format(
+        names = [row['name'] for row in conn.execute(sql.SQL('SELECT {}::text AS name FROM {}').format(
             sql.Identifier(document.get('directory_column', 'sensor_name')),
-            sql.Identifier(*table_parts(document.get('directory_table', 'public.sensor_directory'))))).fetchall()}
+            sql.Identifier(*table_parts(document.get('directory_table', 'public.sensor_directory'))))).fetchall()]
+        if not names or any(name is None or not name.strip() for name in names):
+            raise ValueError('Справочник пуст или содержит пустые идентификаторы; агрегаты не изменены')
+        return set(names)
 
 
 def schedule_ranges(profile, now, repeat_minutes):
     today = now.astimezone(ZoneInfo(profile['document'].get('timezone', 'Europe/Moscow'))).date()
-    begin = profile['processed_until'] or today-timedelta(days=1)
+    begin = profile.get('attempted_until') or profile['processed_until'] or today-timedelta(days=1)
     if begin < today:
         yield begin, today, f"{profile['id']}:{today}:daily"
     local = now.astimezone(ZoneInfo('Europe/Moscow'))
@@ -120,12 +123,19 @@ class Controller:
             return result
         parts = urlparse(path)
         route = parts.path.strip('/').split('/')
+        if method == 'GET' and route == ['device-availability']:
+            from .availability import REPORTS
+            params = parse_qs(parts.query)
+            if set(params) - {'period', 'refresh'}:
+                raise ValueError('Неизвестные параметры отчёта')
+            return REPORTS.get(self, params.get('period', ['day'])[0],
+                               refresh=params.get('refresh', ['0'])[0] == '1')
         if method == 'GET' and route == ['live-hours']:
             from .live import live_hours
             return live_hours(self)
         if method == 'GET' and route == ['health']:
             self.store.query('SELECT id FROM settings WHERE id=1')
-            return {'status': 'ok'}
+            return {'status': 'ok', 'algorithm_version': 3, 'control_schema': self.store.schema}
         if method == 'GET' and route == ['connections']:
             return sorted(alias for alias in self.registry if alias != 'directory')
         if method == 'GET' and route == ['tables']:
@@ -151,6 +161,8 @@ class Controller:
                                     (str(uuid.uuid4()), Jsonb(document), signature), one=True)
         if method == 'POST' and len(route) == 3 and route[0] == 'profiles' and route[2] == 'activate':
             profile = self.store.profile(route[1])
+            if profile['signature'] != fingerprint(build_settings(profile['document'], self.registry)):
+                raise ValueError('Нужна новая версия профиля и предварительный расчёт нового алгоритма')
             if not profile['validated']:
                 raise ValueError('Сначала выполните успешный предварительный расчёт этого профиля')
             with self.store.connection() as conn:
@@ -181,6 +193,10 @@ class Controller:
                 return self.dispatch('GET', '/schedule', {})
         if method == 'GET' and route == ['jobs']:
             return self.store.query('SELECT * FROM jobs ORDER BY created_at DESC LIMIT 50')
+        if method == 'GET' and route == ['day-results']:
+            profile_id = parse_qs(parts.query).get('profile_id', [''])[0]
+            return self.store.query('SELECT * FROM day_results WHERE profile_id=%s ORDER BY day DESC LIMIT 366',
+                                    (profile_id,))
         if method == 'GET' and len(route) == 2 and route[0] == 'jobs':
             return self.store.job(route[1])
         if method == 'POST' and route == ['inspect']:
@@ -239,31 +255,29 @@ def process_job(controller, job, stop_requested=None):
                 or (preview['date_from'], preview['date_to']) != (job['date_from'], job['date_to'])):
             raise ValueError('Нужен успешный предварительный расчёт того же профиля и диапазона')
         plan = next((event for event in preview['events'] if event['event'] == 'plan'), None)
+        if not plan or plan.get('algorithm_version') != 3:
+            raise ValueError('Выполните новый предварительный расчёт текущего алгоритма')
         effective_end = min(job['date_to'], datetime.now(ZoneInfo('Europe/Moscow')).date())
         if not plan or date.fromisoformat(plan['to_exclusive'][:10]) != effective_end:
             raise ValueError('После предварительного расчёта изменилась граница завершённых суток. Повторите проверку.')
         expected_schema = next((event.get('signature') for event in preview['events'] if event['event'] == 'schema'), None)
         if not expected_schema:
             raise ValueError('Выполните новый предварительный расчёт с проверкой доступных столбцов')
+        expected_directory = next((event.get('directory_signature') for event in preview['events'] if event['event'] == 'schema'), None)
+        if expected_directory != directory_signature(allowed):
+            raise ValueError('Состав справочника изменился; выполните новый предварительный расчёт')
     if job['kind'] == 'preview':
         store.query('UPDATE profiles SET validated=false WHERE id=%s', (job['profile_id'],))
-    errors = []
     days = []
     def emit(event):
-        errors.extend(event.get('errors', []))
         if event['event'] == 'day':
             days.append(event)
-            if job['kind'] == 'scheduled':
-                # Advance only contiguous, successfully committed automatic days.
-                next_day = date.fromisoformat(event['date'])+timedelta(days=1)
-                store.query('UPDATE profiles SET processed_until=%s WHERE id=%s AND (processed_until IS NULL OR processed_until=%s)',
-                            (next_day, job['profile_id'], date.fromisoformat(event['date'])))
+        if event['event'] in ('day', 'day_skipped') and job['kind'] in ('apply', 'scheduled'):
+            store.record_day(job['profile_id'], job['id'], event, scheduled=job['kind'] == 'scheduled')
         store.event(job['id'], clean_json(event))
     refresh(settings, start=job['date_from'], end=job['date_to'], apply=job['kind'] in ('apply', 'scheduled'),
             emit=emit, allowed_sensors=allowed, stop_requested=stop_requested,
             expected_schema_signature=expected_schema)
-    if errors:
-        raise RefreshError('; '.join(dict.fromkeys(errors)))
     if not days:
         raise RefreshError('В диапазоне нет завершённых суток; запись не выполнялась')
     if job['kind'] == 'preview':
@@ -300,7 +314,7 @@ def worker(controller, stop):
                         if isinstance(exc, RefreshInterrupted):
                             controller.store.query("UPDATE jobs SET status='queued',attempts=attempts-1,error=%s WHERE id=%s", (str(exc), job['id']))
                             continue
-                        retry = job['kind'] == 'scheduled' and job['attempts'] < 5 and isinstance(exc, (psycopg.Error, RefreshError))
+                        retry = job['kind'] == 'scheduled' and job['attempts'] < 5 and isinstance(exc, psycopg.OperationalError)
                         message = ('Ошибка PostgreSQL; проверьте доступность, права и структуру' if isinstance(exc, psycopg.Error)
                                    else str(exc) if isinstance(exc, (ValueError, RefreshError)) else 'Внутренняя ошибка задания')
                         controller.store.query('''UPDATE jobs SET status=%s,error=%s,finished_at=now(),
@@ -319,7 +333,7 @@ def serve():
     controller = Controller(store, connections())
     # Installation is intentionally explicit, not performed on startup.
     version = store.query('SELECT schema_version FROM settings WHERE id=1', one=True)
-    if not version or version['schema_version'] != 1:
+    if not version or version['schema_version'] != 2:
         raise ValueError('Неподдерживаемая версия служебной схемы')
     stop = threading.Event()
 

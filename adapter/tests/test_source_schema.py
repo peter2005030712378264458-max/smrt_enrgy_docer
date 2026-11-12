@@ -189,7 +189,13 @@ class SourceSchemaTests(unittest.TestCase):
         with self.assertRaisesRegex(RefreshError, 'без времени'):
             self.run_refresh(True, profile=False)
 
-    def test_incomplete_hour_has_unknown_energy_even_when_coverage_is_allowed(self):
+    def test_cli_without_profile_rejects_missing_meter_id(self):
+        with psycopg.connect(self.source_dsn) as conn:
+            conn.execute('UPDATE public.review_readings SET sensor_name=NULL')
+        with self.assertRaisesRegex(RefreshError, 'без идентификатора'):
+            self.run_refresh(True, profile=False)
+
+    def test_missing_duplicate_value_does_not_cancel_other_value_at_same_time(self):
         self.profile['quality']['min_coverage'] = 0
         with psycopg.connect(self.source_dsn) as conn:
             conn.execute('INSERT INTO public.review_readings SELECT * FROM public.review_readings')
@@ -197,7 +203,7 @@ class SourceSchemaTests(unittest.TestCase):
         self.profile['quality']['max_duplicate_fraction'] = 1
         self.profile['quality']['min_interval_match'] = 0
         self.run_refresh(True)
-        self.assertIsNone(self.daily()['energy_kwh'])
+        self.assertEqual(self.daily()['energy_kwh'], 24)
 
     def test_inspection_retains_catalog_columns_when_sample_times_out(self):
         with psycopg.connect(self.source_dsn) as blocker:
@@ -250,7 +256,7 @@ class SourceSchemaTests(unittest.TestCase):
         alternate = replace(settings, hourly_table='"student_schema"."electricity_sensor_readings_hourly"')
         with psycopg.connect(self.target_dsn, autocommit=True, row_factory=dict_row) as connection:
             with target_lock(connection, settings), self.assertRaisesRegex(RefreshError, 'already running'):
-                refresh(alternate, start=date(2026, 10, 15), end=date(2026, 10, 16))
+                refresh(alternate, start=date(2026, 10, 15), end=date(2026, 10, 16), allowed_sensors={'Meter A'})
 
     def test_column_privileges_allow_only_readable_measurements(self):
         role = 'adapter_review_columns'

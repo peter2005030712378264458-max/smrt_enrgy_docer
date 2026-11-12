@@ -91,7 +91,7 @@ function DashboardPage() {
         const nextFilters = await getDashboardFilters()
         if (active) {
           setFilters(normalizeFilters(nextFilters))
-          setSelectedDate(nextFilters.date_range?.date_to?.slice(0, 10) ?? '')
+          setSelectedDate(buildAvailableDates(nextFilters.date_range).at(-1) ?? '')
           setError('')
         }
       } catch (requestError) {

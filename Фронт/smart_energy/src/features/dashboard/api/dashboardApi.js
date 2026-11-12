@@ -47,8 +47,8 @@ async function dashboardRequest(path, options = {}, retry = true) {
   return dashboardRequest(path, options, false)
 }
 
-async function getJson(path) {
-  const response = await dashboardRequest(path)
+async function getJson(path, options) {
+  const response = await dashboardRequest(path, options)
   const data = await response.json().catch(() => ({}))
 
   if (!response.ok) {
@@ -60,6 +60,10 @@ async function getJson(path) {
 
 export function getDashboardFilters() {
   return getJson('/filters/')
+}
+
+export function getDeviceAvailability(period, { signal, refresh = false } = {}) {
+  return getJson(`/device-availability/${buildQuery({ period, refresh: refresh ? '1' : '0' })}`, { signal })
 }
 
 export function getDashboardSummary(params) {

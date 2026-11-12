@@ -126,7 +126,8 @@ def fetch_period_stats(
     energy_sql = ('CASE WHEN COUNT(*)=COUNT(a.energy_kwh) '
                   'AND COUNT(*)=COUNT(*) FILTER (WHERE a.active_power_w_avg_count=a.points_count) '
                   'THEN SUM(a.energy_kwh) ELSE NULL END'
-                  if settings.use_stored_energy else complete_power_sql)
+                  if settings.use_stored_energy else
+                  f'CASE WHEN COUNT(*)=COUNT(a.energy_kwh) THEN {complete_power_sql} END')
 
     sql = f"""
         WITH hourly AS (
@@ -147,7 +148,9 @@ def fetch_period_stats(
             AVG(hourly_total_kw) AS mean_kw,
             STDDEV_SAMP(hourly_total_kw) AS stddev_kw,
             VAR_SAMP(hourly_total_kw) AS variance_kw2,
-            CASE WHEN COUNT(*)=COUNT(hourly_energy_kwh) THEN SUM(hourly_energy_kwh) ELSE NULL END AS total_energy_kwh,
+            CASE WHEN COUNT(*)=COUNT(hourly_energy_kwh)
+                 AND COUNT(*)=EXTRACT(EPOCH FROM (%(to_ts_exclusive)s::timestamptz-%(from_ts)s::timestamptz))/3600
+                 THEN SUM(hourly_energy_kwh) ELSE NULL END AS total_energy_kwh,
             MIN(bucket_start) AS actual_from,
             MAX(bucket_start) AS actual_to
         FROM hourly

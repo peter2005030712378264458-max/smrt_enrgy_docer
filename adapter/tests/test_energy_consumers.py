@@ -150,6 +150,49 @@ def check_missing_measurements(q, metadata, request, settings_class, period_clas
         assert points[1]['available_meters'] == 0 and points[1]['total_meters'] == 2
 
 
+def check_available_energy(q, fixture):
+    from django.test import override_settings
+    fixture.setUp()
+    fixture.add_meter_without_power()
+    with psycopg.connect(fixture.source_dsn) as conn:
+        conn.execute("UPDATE customer SET power_kw=NULL WHERE meter_id='42' AND время='2026-10-15 00:00'")
+    fixture.run_refresh(True, allowed_sensors={'Meter A', 'Meter B'})
+    request = SimpleNamespace(query_params={'from':'2026-10-15T00:00:00+03:00',
+        'to':'2026-10-15T23:59:59+03:00','granularity':'hour'})
+    for stored in (False, True):
+        with override_settings(ENERGY_USE_STORED_ENERGY=stored), patch.object(q, '_matching_data_names', return_value=None):
+            summary = q.get_summary(request)
+            assert summary['total_energy_kwh'] is None
+            assert summary['available_energy_kwh'] == 47
+            points = q.get_timeseries(request)['points']
+            assert len(points) == 24 and points[0]['available_energy_kwh'] is None
+            assert sum(p['available_energy_kwh'] for p in points if p['available_energy_kwh'] is not None) == 47
+            assert all(p['energy_kwh'] is None for p in points)
+
+
+def check_seven_daily_positions(q, fixture):
+    """The reported week: adjacent days plus an isolated last measured zero."""
+    from django.test import override_settings
+    from zoneinfo import ZoneInfo
+    with psycopg.connect(fixture.target_dsn) as conn:
+        conn.execute('TRUNCATE student_schema.electricity_sensor_readings_daily')
+        for day, value in [('2026-10-30', 1000), ('2026-10-31', 2000), ('2026-11-04', 0)]:
+            conn.execute('''INSERT INTO student_schema.electricity_sensor_readings_daily
+                (bucket_start,sensor_name,points_count,active_power_w_avg,active_power_w_avg_count,
+                 available_energy_kwh) VALUES(%s,'Meter A',1,%s,1,0),(%s,'Silent',0,NULL,0,NULL)''',
+                (day,value,day))
+    request = SimpleNamespace(query_params={'from':'2026-10-29T00:00:00+03:00',
+        'to':'2026-11-04T23:59:59+03:00','granularity':'day'})
+    with override_settings(ENERGY_USE_STORED_ENERGY=True), patch.object(q, '_matching_data_names', return_value=None):
+        points = q.get_timeseries(request)['points']
+        assert len(points) == 7
+        assert [p['timestamp'].astimezone(ZoneInfo('Europe/Moscow')).date().isoformat() for p in points] == [
+            '2026-10-29','2026-10-30','2026-10-31','2026-11-01','2026-11-02','2026-11-03','2026-11-04']
+        assert [p['available_value'] for p in points] == [None,1,2,None,None,None,0]
+        assert all(p['total_meters'] == 2 for p in points)
+        assert all(p['value'] is None and p['energy_kwh'] is None for p in points)
+
+
 def main():
     from adapter.tests.test_adapter import IntegrationTests
     IntegrationTests.setUpClass()
@@ -200,7 +243,9 @@ def main():
     with psycopg.connect(fixture.target_dsn) as connection:
         connection.execute("UPDATE student_schema.electricity_sensor_readings_daily SET active_power_w_avg_count=NULL WHERE bucket_start='2026-10-16'")
     assert load_days(date(2026,10,16), date(2026,10,17))[date(2026,10,16)]['Meter A'] is None
-    print('Consumer SQL checks passed: summary, timeseries, top devices, room loads, heatmap, analytics, missing columns, real zero, both energy modes, exact metric weights and weekly power.')
+    check_available_energy(q, fixture)
+    check_seven_daily_positions(q, fixture)
+    print('Consumer SQL checks passed: numeric weights, both energy modes, available data, seven Moscow dates and isolated zero.')
 
 
 if __name__ == '__main__':

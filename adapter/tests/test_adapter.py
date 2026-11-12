@@ -88,6 +88,19 @@ class ModelTests(unittest.TestCase):
         self.assertEqual(ranges[0][0], date(2026, 10, 15))
         self.assertEqual(len(ranges), 2)
 
+    def test_daily_midnight_and_repeat_boundary_use_moscow_calendar(self):
+        profile = {'id':'p', 'document':PROFILE, 'processed_until':date(2026,11,6),
+                   'attempted_until':date(2026,11,6)}
+        self.assertEqual(list(schedule_ranges(profile,datetime(2026,11,6,20,59,59,tzinfo=timezone.utc),0)),[])
+        midnight=list(schedule_ranges(profile,datetime(2026,11,6,21,tzinfo=timezone.utc),15))
+        self.assertEqual(midnight[0][:2],(date(2026,11,6),date(2026,11,7)))
+        self.assertEqual(len(midnight),1)
+        profile['processed_until']=profile['attempted_until']=date(2026,11,7)
+        self.assertEqual(list(schedule_ranges(profile,datetime(2026,11,6,21,14,59,tzinfo=timezone.utc),15)),[])
+        repeat=list(schedule_ranges(profile,datetime(2026,11,6,21,15,tzinfo=timezone.utc),15))
+        self.assertEqual(repeat[0][:2],(date(2026,11,6),date(2026,11,7)))
+        self.assertTrue(repeat[0][2].endswith(':repeat'))
+
 
 @unittest.skipUnless(os.environ.get('ADAPTER_TEST_ADMIN_DSN'), 'Isolated test PostgreSQL not configured')
 class IntegrationTests(unittest.TestCase):
@@ -162,32 +175,35 @@ class IntegrationTests(unittest.TestCase):
             self.assertEqual(checkpoint.read_text(), 'old checkpoint unchanged')
         self.assertEqual(self.totals(), {'rows': 25, 'energy': Decimal(57)})
 
-    def test_empty_and_partial_source_preserve_target(self):
+    def test_empty_and_partial_source_replace_target_with_available_data(self):
         self.run_refresh(True)
         with psycopg.connect(self.source_dsn) as conn:
             conn.execute("DELETE FROM customer WHERE время >= '2026-10-15 10:00'")
+        self.run_refresh(True)
+        self.assertEqual(self.totals()['energy'], 10)
+        with psycopg.connect(self.source_dsn) as conn:
+            conn.execute('TRUNCATE customer')
+        self.run_refresh(True)
+        self.assertEqual(self.totals()['rows'], 24)
+        self.assertIsNone(self.totals()['energy'])
+
+    def test_duplicates_are_combined_but_unknown_sensors_fail(self):
+        with psycopg.connect(self.source_dsn) as conn:
+            conn.execute('INSERT INTO customer SELECT * FROM customer LIMIT 1')
+        self.run_refresh(True)
+        self.assertEqual(self.totals()['energy'], 48)
+        with psycopg.connect(self.source_dsn) as conn:
+            conn.execute("UPDATE customer SET meter_id='unknown'")
         with self.assertRaises(RefreshError):
             self.run_refresh(True)
         self.assertEqual(self.totals()['energy'], 48)
-        with psycopg.connect(self.source_dsn) as conn:
-            conn.execute('TRUNCATE customer')
-        with self.assertRaises(RefreshError):
-            self.run_refresh(True)
-        self.assertEqual(self.totals()['rows'], 24)
-
-    def test_duplicate_and_unknown_sensors_fail(self):
-        with psycopg.connect(self.source_dsn) as conn:
-            conn.execute('INSERT INTO customer SELECT * FROM customer LIMIT 1')
-        with self.assertRaises(RefreshError):
-            self.run_refresh(True)
-        self.assertEqual(self.totals()['rows'], 0)
 
     def test_atomic_pair_rollback(self):
         self.run_refresh(True)
         with psycopg.connect(self.target_dsn) as conn:
             conn.execute('ALTER TABLE student_schema.electricity_sensor_readings_daily ADD CONSTRAINT force_failure CHECK(energy_kwh < 0) NOT VALID')
         try:
-            with self.assertRaises(psycopg.errors.CheckViolation):
+            with self.assertRaises(RefreshError):
                 self.run_refresh(True)
             self.assertEqual(self.totals()['energy'], 48)
         finally:
@@ -258,22 +274,20 @@ class IntegrationTests(unittest.TestCase):
         self.assertEqual(quality['coverage'], {'Meter A': 1})
         self.assertEqual(self.totals(), {'rows': 24, 'energy': Decimal(0)})
 
-    def test_no_valid_power_anywhere_still_blocks_and_preserves_target(self):
+    def test_no_valid_power_anywhere_writes_null_and_available_other_metrics(self):
         self.run_refresh(True)
         with psycopg.connect(self.source_dsn) as conn:
             conn.execute('UPDATE customer SET power_kw=NULL')
-        with self.assertRaisesRegex(RefreshError, 'ни у одного счётчика'):
-            self.run_refresh(True)
-        self.assertEqual(self.totals(), {'rows': 24, 'energy': Decimal(48)})
+        self.run_refresh(True)
+        self.assertEqual(self.totals(), {'rows': 24, 'energy': None})
 
-    def test_partial_power_loss_still_blocks_despite_other_missing_sensor(self):
+    def test_partial_power_loss_writes_both_meters(self):
         self.run_refresh(True)
         self.add_meter_without_power()
         with psycopg.connect(self.source_dsn) as conn:
             conn.execute("UPDATE customer SET power_kw=NULL WHERE meter_id='42' AND время>='2026-10-15 02:00'")
-        with self.assertRaisesRegex(RefreshError, 'недостаточно корректных показаний мощности: Meter A'):
-            self.run_refresh(True, allowed_sensors={'Meter A', 'Meter B'})
-        self.assertEqual(self.totals(), {'rows': 24, 'energy': Decimal(48)})
+        self.run_refresh(True, allowed_sensors={'Meter A', 'Meter B'})
+        self.assertEqual(self.totals(), {'rows': 48, 'energy': Decimal(2)})
 
     def test_nonfinite_power_warns_without_writing_nonfinite_aggregates(self):
         self.add_meter_without_power(Decimal('NaN'))
@@ -366,17 +380,107 @@ class IntegrationTests(unittest.TestCase):
         self.store.event(job['id'], {'event': 'second'})
         self.assertEqual([e['event'] for e in self.store.job(job['id'])['events']], ['first', 'second'])
 
+    def test_worker_writes_two_successive_moscow_days_once(self):
+        from adapter.service import worker
+        controller=self.controller()
+        with psycopg.connect(self.source_dsn) as conn:
+            conn.execute('''INSERT INTO customer SELECT "время"+interval '1 day',meter_id,power_kw,voltage
+                FROM customer WHERE "время">='2026-10-15' AND "время"<'2026-10-16' ''')
+            conn.execute('''INSERT INTO customer SELECT "время"+interval '2 days',meter_id,power_kw,voltage
+                FROM customer WHERE "время">='2026-10-15' AND "время"<'2026-10-16' ''')
+        class Clock(datetime):
+            current=datetime(2026,10,16,20,59,59,tzinfo=timezone.utc)
+            @classmethod
+            def now(cls,tz=None):
+                return cls.current.astimezone(tz or timezone.utc)
+        class Stop:
+            stopped=False
+            waits=0
+            calls=0
+            def is_set(self):
+                self.calls+=1
+                if self.calls>100:
+                    raise AssertionError('Worker did not finish the simulated schedule')
+                return self.stopped
+            def wait(self,timeout):
+                self.waits+=1
+                if self.waits==1: Clock.current=datetime(2026,10,16,21,tzinfo=timezone.utc)
+                elif self.waits==2: Clock.current=datetime(2026,10,17,21,tzinfo=timezone.utc)
+                else: self.stopped=True
+                return self.stopped
+        with patch.dict(os.environ,{'ENERGY_AGG_TARGET_DSN':self.target_dsn}):
+            profile=controller.dispatch('POST','/profiles',self.profile)
+            preview=self.store.enqueue(profile['id'],'preview',date(2026,10,15),date(2026,10,16))
+            process_job(controller,preview)
+            self.store.query("UPDATE jobs SET status='succeeded' WHERE id=%s",(preview['id'],))
+            controller.dispatch('POST',f"/profiles/{profile['id']}/activate",{})
+            self.store.query('UPDATE profiles SET processed_until=%s,attempted_until=%s WHERE id=%s',
+                             (date(2026,10,16),date(2026,10,16),profile['id']))
+            self.store.query('UPDATE settings SET enabled=true,repeat_minutes=0')
+            stop=Stop()
+            with patch('adapter.service.datetime',Clock):
+                worker(controller,stop)
+        jobs=self.store.query("SELECT status,date_from,date_to,slot FROM jobs WHERE kind='scheduled' ORDER BY date_from")
+        self.assertEqual([(j['date_from'],j['date_to'],j['status']) for j in jobs],
+                         [(date(2026,10,16),date(2026,10,17),'succeeded'),
+                          (date(2026,10,17),date(2026,10,18),'succeeded')])
+        self.assertEqual(len({j['slot'] for j in jobs}),2)
+        current=self.store.profile(profile['id'])
+        self.assertEqual(current['processed_until'],date(2026,10,18))
+        self.assertEqual(current['attempted_until'],date(2026,10,18))
+        with psycopg.connect(self.target_dsn) as conn:
+            self.assertEqual(conn.execute('SELECT COUNT(*),SUM(energy_kwh) FROM student_schema.electricity_sensor_readings_daily').fetchone(),(2,Decimal(96)))
+
+    def test_worker_retries_source_disconnect_without_losing_aggregates_or_progress(self):
+        from adapter.service import worker
+        controller=self.controller()
+        with patch.dict(os.environ,{'ENERGY_AGG_TARGET_DSN':self.target_dsn}):
+            profile=controller.dispatch('POST','/profiles',self.profile)
+            preview=self.store.enqueue(profile['id'],'preview',date(2026,10,15),date(2026,10,16))
+            process_job(controller,preview)
+            self.store.query("UPDATE jobs SET status='succeeded' WHERE id=%s",(preview['id'],))
+            apply=self.store.enqueue(profile['id'],'apply',date(2026,10,15),date(2026,10,16),preview_id=preview['id'])
+            process_job(controller,apply)
+            self.store.query("UPDATE jobs SET status='succeeded' WHERE id=%s",(apply['id'],))
+            job=self.store.enqueue(profile['id'],'scheduled',date(2026,10,15),date(2026,10,16),slot='retry-source-test')
+            owner=self
+            class Stop:
+                stopped=False
+                waits=0
+                def is_set(self): return self.stopped
+                def wait(self,timeout):
+                    self.waits+=1
+                    if self.waits==1:
+                        queued=owner.store.query('SELECT *,available_at>now()+interval \'4 minutes\' AS delayed FROM jobs WHERE id=%s',
+                                                 (job['id'],),one=True)
+                        owner.assertEqual((queued['status'],queued['attempts']),('queued',1))
+                        owner.assertTrue(queued['delayed'])
+                        owner.assertEqual(owner.totals(),{'rows':24,'energy':Decimal(48)})
+                        state=owner.store.profile(profile['id'])
+                        owner.assertIsNone(state['processed_until'])
+                        owner.assertIsNone(state['attempted_until'])
+                        owner.store.query('UPDATE jobs SET available_at=now() WHERE id=%s',(job['id'],))
+                    else: self.stopped=True
+                    return self.stopped
+            attempts=[]
+            def disconnect_once(*args):
+                attempts.append(args[1]['attempts'])
+                if len(attempts)==1: raise psycopg.OperationalError('simulated source tunnel disconnect')
+                return process_job(*args)
+            with patch('adapter.service.process_job',side_effect=disconnect_once):
+                worker(controller,Stop())
+        current=self.store.job(job['id'])
+        self.assertEqual(attempts,[1,2])
+        self.assertEqual((current['status'],current['attempts']),('succeeded',2))
+        self.assertEqual(self.totals(),{'rows':24,'energy':Decimal(48)})
+        self.assertEqual(self.store.profile(profile['id'])['processed_until'],date(2026,10,16))
+
     def test_commit_before_control_failure_can_be_retried(self):
         controller = self.controller()
         with patch.dict(os.environ, {'ENERGY_AGG_TARGET_DSN': self.target_dsn}):
             profile = controller.dispatch('POST', '/profiles', self.profile)
             job = self.store.enqueue(profile['id'], 'scheduled', date(2026, 10, 15), date(2026, 10, 16))
-            original_query = self.store.query
-            def fail_progress(statement, *args, **kwargs):
-                if isinstance(statement, str) and statement.startswith('UPDATE profiles SET processed_until'):
-                    raise psycopg.OperationalError('simulated control disconnect')
-                return original_query(statement, *args, **kwargs)
-            with patch.object(self.store, 'query', side_effect=fail_progress):
+            with patch.object(self.store, 'record_day', side_effect=psycopg.OperationalError('simulated control disconnect')):
                 with self.assertRaises(psycopg.OperationalError):
                     process_job(controller, job)
             self.assertEqual(self.totals(), {'rows': 24, 'energy': Decimal(48)})

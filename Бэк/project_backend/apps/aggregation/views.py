@@ -21,7 +21,7 @@ class AdapterView(APIView):
     permission_classes = (IsAdminUser,)
 
     def forward(self, request, operation):
-        allowed_get = r'(health|connections|tables|profiles|schedule|jobs|jobs/[0-9a-f-]{36})'
+        allowed_get = r'(health|connections|tables|profiles|schedule|jobs|day-results|jobs/[0-9a-f-]{36})'
         allowed_post = r'(connections|connections/test|inspect|profiles|profiles/[0-9a-f-]{36}/activate|jobs|schedule)'
         pattern = allowed_get if request.method == 'GET' else allowed_post
         
@@ -29,6 +29,8 @@ class AdapterView(APIView):
             return Response({'detail': 'Неизвестная операция'}, status=404)
         if request.method == 'GET' and operation == 'tables':
             operation += '?' + urlencode({'connection': request.query_params.get('connection', '')})
+        if request.method == 'GET' and operation == 'day-results':
+            operation += '?' + urlencode({'profile_id': request.query_params.get('profile_id', '')})
             
         payload = request.data if request.method == 'POST' else None
         result, status = request_adapter(request.method, operation, payload)

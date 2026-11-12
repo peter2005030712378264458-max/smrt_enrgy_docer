@@ -59,7 +59,7 @@ services:
       context: .
       dockerfile: adapter/Dockerfile
     environment:
-      ENERGY_ADAPTER_CONTROL_SCHEMA: adapter_workstation
+      ENERGY_ADAPTER_CONTROL_SCHEMA: ${LOCAL_ADAPTER_CONTROL_SCHEMA:?Run deploy/local/configure.py --isolate-control first}
       ENERGY_NOTIFICATION_FALLBACK_SCHEMA: adapter_control
       ENERGY_ADAPTER_CONNECTIONS_FILE: /home/adapter/state/connections.enc
       ENERGY_ADAPTER_CONNECTION_KEY_FILE: /run/secrets/connection_key

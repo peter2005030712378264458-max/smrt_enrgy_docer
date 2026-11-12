@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { buildPowerSeries, buildPowerStats, buildSummaryFromTimeseries } from './dashboardUtils.js'
+import { buildPowerSeries, buildPowerStats, buildSummaryFromTimeseries, buildDashboardParams } from './dashboardUtils.js'
 
 const at = hour => `2026-10-15T${String(hour).padStart(2, '0')}:00:00+03:00`
 
@@ -77,4 +77,35 @@ test('complete power is not marked partial and unknown legacy power stays unknow
   const legacy = [{ timestamp: at(0), value: null, available_value: null, available_meters: 0, total_meters: 2 }]
   assert.equal(buildPowerSeries(legacy)[0].kw, null)
   assert.equal(buildPowerStats(legacy, null).avgKw, null)
+})
+
+test('seven days preserves all Moscow dates even when history is shorter', () => {
+  for (const [selectedDate, expectedFrom] of [['2026-11-04', '2026-10-29'], ['2027-01-03', '2026-12-28']]) {
+    const params = buildDashboardParams({ period: '7d', selectedDate,
+      dateRange: { date_from: `${selectedDate}T00:00:00+03:00`, date_to: `${selectedDate}T23:00:00+03:00` } })
+    assert.equal(params.granularity, 'day')
+    assert.equal(params.from, `${expectedFrom}T00:00:00+03:00`)
+    assert.equal(params.to, `${selectedDate}T23:59:59+03:00`)
+  }
+})
+
+test('isolated last day and real zero survive among seven calendar positions', () => {
+  const dates = ['2026-10-29', '2026-10-30', '2026-10-31', '2026-11-01', '2026-11-02', '2026-11-03', '2026-11-04']
+  const points = dates.map((date, index) => ({ timestamp: `${date}T00:00:00+03:00`, value: null,
+    available_value: [1, 2, 6].includes(index) ? index === 6 ? 0 : 25 : null,
+    available_meters: [1, 2, 6].includes(index) ? 47 : 0, total_meters: 49 }))
+  const series = buildPowerSeries(points)
+  assert.equal(series.length, 7)
+  assert.equal(series.filter(point => point.kw !== null).length, 3)
+  assert.equal(series.at(-1).kw, 0)
+  assert.equal(buildPowerStats(points, null).pointsCount, 7)
+})
+
+test('available energy sums known contributions and all unknown remains NULL', () => {
+  const make = values => values.map((energy, hour) => ({ timestamp: at(hour), value: 1,
+    energy_kwh: null, available_energy_kwh: energy }))
+  assert.equal(buildSummaryFromTimeseries(make([2, null, 3]), null).available_energy_kwh, 5)
+  assert.equal(buildSummaryFromTimeseries(make([null, null]), null).available_energy_kwh, null)
+  assert.equal(buildSummaryFromTimeseries(make([0, null]), null).available_energy_kwh, 0)
+  assert.equal(buildSummaryFromTimeseries(make([2, null, 3]), null).total_energy_kwh, null)
 })

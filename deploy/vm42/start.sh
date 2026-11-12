@@ -24,6 +24,7 @@ fi
 # The database volume and existing readings remain in place.
 compose stop adapter notifications
 compose run --rm --no-deps adapter upgrade-aggregates
+compose run --rm --no-deps adapter upgrade-control
 if [ "$legacy_compose" = 1 ]; then
   # Compose v1 cannot merge ContainerConfig from newer Docker images.
   # Recreate only application containers; keep named volumes and DB/tunnel.
@@ -32,5 +33,4 @@ if [ "$legacy_compose" = 1 ]; then
 fi
 compose up -d --no-build db source-db backend analytical adapter frontend
 compose up -d --no-build notifications
-compose exec -T adapter python -m adapter init-control
 compose ps

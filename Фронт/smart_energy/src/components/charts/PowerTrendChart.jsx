@@ -25,6 +25,11 @@ function tooltipLabel(value) {
   }).format(new Date(value))
 }
 
+function KnownPowerDot({ cx, cy, value }) {
+  if (value === null || value === undefined || !Number.isFinite(cx) || !Number.isFinite(cy)) return null
+  return <circle cx={cx} cy={cy} r={4} fill="var(--chart-primary)" data-testid="power-point" />
+}
+
 export default function PowerTrendChart({ points, granularity }) {
   const values = buildPowerSeries(points)
   const known = values.filter(point => point.kw !== null)
@@ -44,11 +49,14 @@ export default function PowerTrendChart({ points, granularity }) {
           <Tooltip labelFormatter={(value, items) => {
             const point = items?.[0]?.payload
             const coverage = point?.totalMeters > 0 ? ` · счётчиков ${point.availableMeters} из ${point.totalMeters}` : ''
-            return `${tooltipLabel(value)}${coverage}`
+            const energy = point?.energyKwh ?? point?.availableEnergyKwh
+            const energyLabel = point?.energyKwh == null ? 'энергия по доступным данным' : 'энергия'
+            const energyNote = energy == null ? '' : ` · ${energyLabel}: ${Number(energy).toLocaleString('ru-RU', { maximumFractionDigits: 3 })} кВт·ч`
+            return `${tooltipLabel(value)}${coverage}${energyNote}`
           }} formatter={(value, name) => [`${Number(value).toLocaleString('ru-RU', { maximumFractionDigits: 2 })} кВт`, name]} contentStyle={{ background: 'var(--surface-elevated)', border: '1px solid var(--border)', borderRadius: 12 }} />
           <Legend />
-          <Line name={partial ? 'Доступная мощность' : 'Факт'} type="monotone" dataKey="actual" stroke="var(--chart-primary)" strokeWidth={3} dot={false} activeDot={{ r: 5 }} />
-          <Line name="Среднее" type="monotone" dataKey="average" stroke="var(--chart-secondary)" strokeWidth={2} strokeDasharray="7 7" dot={false} />
+          <Line name={partial ? 'Доступная мощность' : 'Факт'} type="monotone" dataKey="actual" stroke="var(--chart-primary)" strokeWidth={3} connectNulls={false} isAnimationActive={granularity !== 'day'} dot={granularity === 'day' ? <KnownPowerDot /> : false} activeDot={{ r: 5 }} />
+          <Line name="Среднее" type="monotone" dataKey="average" stroke="var(--chart-secondary)" strokeWidth={2} strokeDasharray="7 7" isAnimationActive={granularity !== 'day'} dot={false} />
         </LineChart>
       </ResponsiveContainer>
     </div>

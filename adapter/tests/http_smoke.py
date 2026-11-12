@@ -51,6 +51,11 @@ day = next(e for e in applied['events'] if e['event'] == 'day')
 assert day['hourly_rows'] == 24 and day['daily_rows'] == 1 and day['written']
 request(f"aggregation/profiles/{profile['id']}/activate/", {}, token)
 assert request('aggregation/schedule/', token=token)['active_profile']['id'] == profile['id']
+results = request('aggregation/day-results/?profile_id='+profile['id'], token=token)
+assert len(results) == 1 and results[0]['outcome'] == 'written'
+series = request('consumption/dashboard/timeseries/?granularity=day&from=2026-10-15&to=2026-10-15', token=token)
+assert len(series['points']) == 1
+assert series['points'][0]['available_energy_kwh'] == 48
 with psycopg.connect('host=db dbname=test_adapter_target user=postgres password=adapter-test-only') as conn:
     assert conn.execute('SELECT SUM(energy_kwh) FROM student_schema.electricity_sensor_readings_hourly').fetchone()[0] == 48
-print('HTTP smoke passed: JWT/permissions, private token, inspection, preview, apply, activation and database result.')
+print('HTTP smoke passed: JWT, private token, preview/apply, activation, durable day results, dashboard energy and DB result.')

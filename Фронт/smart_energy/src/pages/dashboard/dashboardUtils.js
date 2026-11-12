@@ -121,10 +121,9 @@ export function getPeriodParams(period, dateRange, selectedDate) {
 
   const days = Math.max(1, Math.round(periodOption.hours / 24))
   const dateFromKey = addDaysToDateKey(dateKey, -(days - 1))
-  const minDateKey = getDateKeyInDashboardTimeZone(dateRange.date_from)
 
   return {
-    from: `${dateFromKey < minDateKey ? minDateKey : dateFromKey}T00:00:00${DASHBOARD_TIME_OFFSET}`,
+    from: `${dateFromKey}T00:00:00${DASHBOARD_TIME_OFFSET}`,
     to: `${dateKey}T23:59:59${DASHBOARD_TIME_OFFSET}`,
   }
 }
@@ -203,6 +202,8 @@ export function buildPowerSeries(points) {
         kw: fullValue ?? availableValue,
         availableMeters,
         totalMeters,
+        energyKwh: knownNumber(point.energy_kwh),
+        availableEnergyKwh: knownNumber(point.available_energy_kwh),
         isPartial: (availableMeters !== null && totalMeters !== null && availableMeters < totalMeters)
           || (fullValue === null && availableValue !== null),
       }
@@ -231,6 +232,7 @@ export function buildPowerStats(points, summary) {
       minKw: null,
       loadFactor: fallbackMax !== null && fallbackAvg !== null ? (fallbackMax > 0 ? (fallbackAvg / fallbackMax) * 100 : 0) : null,
       pointsCount: timeline.length || knownNumber(summary?.points),
+      knownPointsCount: 0,
       lastTimestamp: timeline.at(-1)?.timestamp ?? summary?.date_to ?? null,
       peakTimestamp: null,
     }
@@ -249,6 +251,7 @@ export function buildPowerStats(points, summary) {
     minKw: min.kw,
     loadFactor: peak.kw > 0 ? (avgKw / peak.kw) * 100 : 0,
     pointsCount: timeline.length,
+    knownPointsCount: series.length,
     lastTimestamp: current.timestamp,
     peakTimestamp: peak.timestamp,
   }
@@ -260,6 +263,8 @@ export function buildSummaryFromTimeseries(points, filters) {
   const energyValues = points.map(point => knownNumber(point.energy_kwh))
   const totalEnergy = energyValues.length && energyValues.every(value => value !== null)
     ? energyValues.reduce((total, value) => total + value, 0) : null
+  const availableEnergy = points.map(point => knownNumber(point.available_energy_kwh)).filter(value => value !== null)
+  const availableEnergyTotal = availableEnergy.length ? availableEnergy.reduce((total, value) => total + value, 0) : null
 
   if (!values.length) {
     return {
@@ -268,6 +273,7 @@ export function buildSummaryFromTimeseries(points, filters) {
       date_from: timeline[0]?.timestamp ?? null,
       date_to: timeline.at(-1)?.timestamp ?? null,
       total_energy_kwh: null,
+      available_energy_kwh: availableEnergyTotal,
       avg_power_kw: null,
       max_power_kw: null,
       avg_voltage_v: null,
@@ -284,6 +290,7 @@ export function buildSummaryFromTimeseries(points, filters) {
     date_from: timeline[0]?.timestamp ?? null,
     date_to: timeline.at(-1)?.timestamp ?? null,
     total_energy_kwh: totalEnergy,
+    available_energy_kwh: availableEnergyTotal,
     avg_power_kw: sum / values.length,
     max_power_kw: Math.max(...values),
     avg_voltage_v: null,

@@ -437,8 +437,14 @@ def _summed_metric_sql(column: str, alias: str = "a") -> str:
 
 def _bucket_energy_sql(granularity: str, alias: str = "a") -> str:
     if settings.ENERGY_USE_STORED_ENERGY:
-        return _stored_energy_sql(alias)
-    known_counts = f'COUNT(*)=COUNT({alias}.active_power_w_avg_count)'
+        result = _stored_energy_sql(alias)
+        if granularity == 'week':
+            return f'CASE WHEN COUNT(DISTINCT {alias}.bucket_start::date)=7 THEN {result} ELSE NULL END'
+        return result
+    known_counts = (f'COUNT(*)=COUNT({alias}.active_power_w_avg_count) '
+                    f'AND COUNT(*)=COUNT({alias}.energy_kwh)')
+    if granularity == 'week':
+        known_counts += f' AND COUNT(DISTINCT {alias}.bucket_start::date)=7'
     if granularity in {"day", "week"}:
         return f"CASE WHEN {known_counts} THEN ({_summed_metric_sql('active_power_w_avg', alias)}) * 24.0 / 1000.0 ELSE NULL END"
     return f"CASE WHEN {known_counts} THEN ({_summed_metric_sql('active_power_w_avg', alias)}) / 1000.0 ELSE NULL END"
@@ -659,6 +665,7 @@ def get_summary(request):
         data_names = _matching_data_names(connection, request)
 
     where_sql, params = _aggregate_where_sql(data_names, request)
+    range_start, range_end, range_params = _timeseries_bounds_sql(request, 'hour', 'timestamp')
     with dashboard_connection(_analytics_db_alias()) as connection:
         row = row_to_dict(
             connection.execute(
@@ -672,11 +679,15 @@ def get_summary(request):
                     SELECT bucket_start,
                            ({_summed_metric_sql('active_power_w_avg', 'filtered')}) / 1000.0 AS total_power_kw,
                            {_hourly_energy_sql('filtered')} AS energy_kwh,
+                           SUM(available_energy_kwh) AS available_energy_kwh,
                            SUM(points_count) AS points_count
                     FROM filtered
                     GROUP BY bucket_start
                 ),
-                latest AS (
+                range_bounds AS (
+                    SELECT {range_start} AS start_at,{range_end} AS end_at
+                    FROM (SELECT bucket_start AS timestamp FROM bucketed) b
+                ), latest AS (
                     SELECT MAX(bucket_start) AS bucket_start
                     FROM filtered
                 )
@@ -685,7 +696,9 @@ def get_summary(request):
                        (SELECT COUNT(*) FROM filtered WHERE active_power_w_avg_count IS NULL) AS unverified_rows,
                        MIN(bucketed.bucket_start) AS date_from,
                        MAX(bucketed.bucket_start) AS date_to,
-                       {_summed_metric_sql('energy_kwh', 'bucketed')} AS total_energy_kwh,
+                       CASE WHEN COUNT(*)=(SELECT EXTRACT(EPOCH FROM end_at-start_at)/3600+1 FROM range_bounds)
+                            THEN {_summed_metric_sql('energy_kwh', 'bucketed')} END AS total_energy_kwh,
+                       SUM(bucketed.available_energy_kwh) AS available_energy_kwh,
                        AVG(bucketed.total_power_kw) AS avg_power_kw,
                        MAX(bucketed.total_power_kw) AS max_power_kw,
                        (SELECT {_weighted_avg_sql("voltage_avg_v", "filtered")} FROM filtered) AS avg_voltage_v,
@@ -698,7 +711,7 @@ def get_summary(request):
                        MAX(bucketed.bucket_start) AS timestamp_iso
                 FROM bucketed
                 """,
-                params,
+                [*params, *range_params],
             ).fetchone()
         )
 
@@ -724,13 +737,15 @@ def get_timeseries(request):
     coverage_columns = ''
     coverage_join = ''
     bucketed_sql = f'''SELECT {bucket_expr} AS timestamp, {value_expr} AS value,
-        {energy_expr} AS energy_kwh, SUM(a.points_count) AS points
+        {energy_expr} AS energy_kwh, SUM(a.available_energy_kwh) AS available_energy_kwh,
+        SUM(a.points_count) AS points
         FROM {source_table} a {where_sql} GROUP BY {bucket_expr}'''
     if is_power:
         # Average across time for each meter, then add meters. Summing seven
         # daily mean powers would incorrectly multiply weekly power by seven.
         meter_cte = f'''per_meter AS (SELECT {bucket_expr} AS timestamp, a.sensor_name,
             ({value_expr}) / 1000.0 AS value, {energy_expr} AS energy_kwh,
+            SUM(a.available_energy_kwh) AS available_energy_kwh,
             SUM(a.points_count) AS points FROM {source_table} a {where_sql}
             GROUP BY {bucket_expr}, a.sensor_name),
             meter_scope AS (SELECT COUNT(DISTINCT sensor_name) AS total_meters FROM per_meter),'''
@@ -741,6 +756,7 @@ def get_timeseries(request):
             CASE WHEN COUNT(p.value)=scope.total_meters THEN SUM(p.value) END AS value,
             SUM(p.value) AS available_value, COUNT(p.value) AS available_meters,
             CASE WHEN COUNT(p.energy_kwh)=scope.total_meters THEN SUM(p.energy_kwh) END AS energy_kwh,
+            SUM(p.available_energy_kwh) AS available_energy_kwh,
             SUM(p.points) AS points
             FROM per_meter p CROSS JOIN meter_scope scope
             GROUP BY p.timestamp, scope.total_meters'''
@@ -773,6 +789,7 @@ def get_timeseries(request):
                 SELECT time_buckets.timestamp,
                        bucketed.value AS value,
                        bucketed.energy_kwh AS energy_kwh,
+                       bucketed.available_energy_kwh AS available_energy_kwh,
                        COALESCE(bucketed.points, 0) AS points{coverage_columns}
                 FROM time_buckets
                 {coverage_join}

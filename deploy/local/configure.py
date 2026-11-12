@@ -5,12 +5,37 @@ from getpass import getpass
 import json
 from pathlib import Path
 import secrets
+import re
 import shutil
 import subprocess
 from urllib.parse import quote
 
 ROOT = Path(__file__).resolve().parents[2]
 HERE = Path(__file__).resolve().parent
+
+
+def ensure_control_schema(path):
+    """Persist a per-install v3 queue without rewriting private connection settings."""
+    existing = path.read_text(encoding='utf-8-sig') if path.exists() else ''
+    pattern = re.compile(r'^LOCAL_ADAPTER_CONTROL_SCHEMA[ \t]*=[ \t]*([^\r\n]*?)[ \t]*\r?$', re.MULTILINE)
+    matches = list(pattern.finditer(existing))
+    if len(matches) > 1:
+        raise ValueError('Duplicate LOCAL_ADAPTER_CONTROL_SCHEMA settings')
+    match = matches[0] if matches else None
+    if match:
+        value = match.group(1).strip("'\"")
+        if re.fullmatch(r'adapter_ws_v3_[a-z0-9_]{1,40}', value):
+            return value
+        if value != 'adapter_workstation':
+            raise ValueError('LOCAL_ADAPTER_CONTROL_SCHEMA must use an isolated adapter_ws_v3_ namespace')
+    value = 'adapter_ws_v3_' + secrets.token_hex(6)
+    line = 'LOCAL_ADAPTER_CONTROL_SCHEMA=' + value
+    if match:
+        updated = existing[:match.start()] + line + existing[match.end():]
+    else:
+        updated = existing + ('\n' if existing and not existing.endswith('\n') else '') + line + '\n'
+    path.write_text(updated, encoding='utf-8')
+    return value
 
 
 def write_env(path, values):
@@ -46,7 +71,11 @@ print(json.dumps({k:os.environ.get(k,'') for k in keys}))
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--from-vm', action='store_true', help='Reuse current database connection parameters over verified SSH')
+    parser.add_argument('--isolate-control', action='store_true', help='Prepare only the isolated local queue identity; no credentials or DB access')
     args = parser.parse_args()
+    if args.isolate_control:
+        print('Local control schema: ' + ensure_control_schema(ROOT/'.env'))
+        return
     if (HERE / 'app.env').exists():
         raise SystemExit('deploy/local/app.env already exists; existing settings were preserved')
     template = dict(line.split('=',1) for line in (HERE/'app.env.example').read_text().splitlines() if '=' in line)
@@ -82,6 +111,7 @@ def main():
         if source.exists():
             shutil.copyfile(source,private/f'nginx.{suffix}')
     write_env(HERE/'app.env',template)
+    ensure_control_schema(ROOT/'.env')
     print('Local settings prepared. Credentials were not printed. No database was created.')
 
 

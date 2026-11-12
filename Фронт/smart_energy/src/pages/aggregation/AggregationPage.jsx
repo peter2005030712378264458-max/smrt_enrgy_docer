@@ -46,6 +46,7 @@ export default function AggregationPage() {
   const [tables, setTables] = useState([])
   const [profiles, setProfiles] = useState([])
   const [jobs, setJobs] = useState([])
+  const [dayResults, setDayResults] = useState([])
   const [schedule, setSchedule] = useState(null)
   const [profile, setProfile] = useState(initialProfile)
   const [selectedId, setSelectedId] = useState('')
@@ -69,6 +70,9 @@ export default function AggregationPage() {
     setProfiles(nextProfiles)
     setJobs(nextJobs)
     setSchedule(nextSchedule)
+    if (nextSchedule.active_profile) {
+      setDayResults(await aggregationRequest('day-results?profile_id=' + encodeURIComponent(nextSchedule.active_profile.id)))
+    } else setDayResults([])
   }, [])
 
   useEffect(() => {
@@ -184,7 +188,7 @@ export default function AggregationPage() {
           <p>Преобразование в Вт, вар, В·А, А, В и Гц: множитель 1 сохраняет единицу, 1000 переводит кВт в Вт. Название столбца не подтверждает единицу.</p>
           <ColumnMappingEditor key={`${profile.connection}:${profile.source_table}`} fields={FIELDS} profile={profile} inspection={effectiveInspection} onChange={changeProfile} />
           {effectiveInspection && <details><summary>Структура и пример показаний</summary><pre>{JSON.stringify({ columns: effectiveInspection.columns, sample: effectiveInspection.sample }, null, 2)}</pre></details>}
-          <details><summary>Справочник, соответствия ID и пороги качества</summary><p>JSON: sensor_map связывает ID заказчика с именами приложения. Порог min_coverage — минимальная доля показаний за сутки.</p><textarea rows="12" aria-label="Дополнительная конфигурация" value={advanced} onChange={(e) => { setAdvanced(e.target.value); setSelectedId(''); setProfile({ ...profile, confirmed: false }) }} placeholder={'{"sensor_map": {}, "quality": {"min_coverage": 0.9}}'} /></details>
+          <details><summary>Справочник и соответствия ID</summary><p>JSON: sensor_map связывает ID с именами справочника. Расчёт использует окна 10 секунд. Старые пороги качества не блокируют запись; пропуски остаются NULL.</p><textarea rows="12" aria-label="Дополнительная конфигурация" value={advanced} onChange={(e) => { setAdvanced(e.target.value); setSelectedId(''); setProfile({ ...profile, confirmed: false }) }} placeholder={'{"sensor_map": {}}'} /></details>
           <label className="aggregation-check"><input type="checkbox" checked={profile.confirmed} onChange={(e) => changeProfile('confirmed', e.target.checked)} />Подтверждаю соответствия, единицы, интервал и часовой пояс</label>
           <div className="aggregation-actions"><button disabled={busy || !profile.confirmed || availability.errors.length > 0} onClick={() => action(async () => {
             const extra = advanced.trim() ? JSON.parse(advanced) : {}
@@ -198,7 +202,7 @@ export default function AggregationPage() {
           {qualityWarnings(preview).map((message, index) => <p key={`${index}-${message}`} className="aggregation-message warning" role="status">{message}</p>)}
           <label className="aggregation-check"><input type="checkbox" checked={replaceConfirmed} onChange={(e) => setReplaceConfirmed(e.target.checked)} />Результаты проверены, существующие агрегаты выбранных дней можно заменить</label><button disabled={busy || !preview || !replaceConfirmed} onClick={() => action(() => submitJob('apply'))}>Записать агрегаты</button>
         </section>}
-        {tab === 'history' && <section className="aggregation-card"><h2>Ежедневная обработка</h2><p>В 00:00 по Москве — предыдущие завершённые сутки. После простоя — пропущенные дни.</p><p>Активный профиль: {schedule?.active_profile?.document.name ?? 'Не выбран'} · Обработано до: {schedule?.active_profile?.processed_until ?? 'Ещё не запускалось'} (не включая)</p><p>Следующий основной запуск: {schedule?.next_run ? formatDateTime(schedule.next_run) : 'Расписание выключено'}</p><div className="aggregation-actions"><button disabled={busy || !schedule || (!schedule.enabled && !schedule.active_profile)} onClick={() => action(async () => { await aggregationRequest('schedule', { enabled: !schedule.enabled }) })}>{schedule?.enabled ? 'Выключить расписание' : 'Включить расписание'}</button><label>Повтор вчерашнего дня, минут после 00:00 (0 — выключен)<input type="number" min="0" max="1439" value={repeatDraft ?? schedule?.repeat_minutes ?? 15} onChange={(e) => setRepeatDraft(Number(e.target.value))} /></label><button disabled={busy || !schedule} onClick={() => action(async () => { await aggregationRequest('schedule', { repeat_minutes: repeatDraft ?? schedule.repeat_minutes }); setRepeatDraft(null) })}>Сохранить время повтора</button></div><p>При включении после простоя обработка может начаться сразу. Пустой или неполный источник останавливает запись; ошибки видны ниже.</p></section>}
+        {tab === 'history' && <section className="aggregation-card"><h2>Ежедневная обработка</h2><p>В 00:00 по Москве — предыдущие завершённые сутки. После простоя — пропущенные дни.</p><p>Активный профиль: {schedule?.active_profile?.document.name ?? 'Не выбран'} · Обработано до: {schedule?.active_profile?.processed_until ?? 'Ещё не запускалось'} (не включая)</p><p>Следующий основной запуск: {schedule?.next_run ? formatDateTime(schedule.next_run) : 'Расписание выключено'}</p><div className="aggregation-actions"><button disabled={busy || !schedule || (!schedule.enabled && !schedule.active_profile)} onClick={() => action(async () => { await aggregationRequest('schedule', { enabled: !schedule.enabled }) })}>{schedule?.enabled ? 'Выключить расписание' : 'Включить расписание'}</button><label>Повтор вчерашнего дня, минут после 00:00 (0 — выключен)<input type="number" min="0" max="1439" value={repeatDraft ?? schedule?.repeat_minutes ?? 15} onChange={(e) => setRepeatDraft(Number(e.target.value))} /></label><button disabled={busy || !schedule} onClick={() => action(async () => { await aggregationRequest('schedule', { repeat_minutes: repeatDraft ?? schedule.repeat_minutes }); setRepeatDraft(null) })}>Сохранить время повтора</button></div><p>При включении после простоя обработка может начаться сразу. Пропуски не блокируют доступные агрегаты; отсутствующие показания сохраняются как NULL. Ошибки отдельных дней не останавливают следующие даты.</p></section>}
         {addingConnection && <ConnectionEditor onClose={() => setAddingConnection(false)} onSaved={async alias => {
           setAliases(await aggregationRequest('connections'))
           changeProfile('connection', alias)
@@ -208,12 +212,15 @@ export default function AggregationPage() {
         }} />}
         <section className="aggregation-card"><h2>Задания</h2><div className="aggregation-table-scroll"><table><thead><tr><th>Создано</th><th>Операция / период</th><th>Состояние</th><th>Результат</th></tr></thead><tbody>{jobs.map((job) => {
           const days = job.events.filter((event) => event.event === 'day')
-          return <tr key={job.id}><td><button className="aggregation-link" onClick={() => setFocusedJob(job.id)}>{formatDateTime(job.created_at)}</button></td><td>{KIND[job.kind]}<br />{job.date_from} {job.date_to && `→ ${job.date_to}`}</td><td>{job.status === 'succeeded' && qualityWarnings(job).length ? 'Готово с предупреждениями' : STATUS[job.status]}</td><td>{days.length ? `${days.length} дн., ${days.reduce((n, d) => n + d.hourly_rows, 0)} часовых строк` : job.error ?? '—'}</td></tr>
+          const skipped = job.events.filter(event => event.event === 'day_skipped')
+          const summary = job.events.findLast(event => event.event === 'summary')
+          return <tr key={job.id}><td><button className="aggregation-link" onClick={() => setFocusedJob(job.id)}>{formatDateTime(job.created_at)}</button></td><td>{KIND[job.kind]}<br />{job.date_from} {job.date_to && `→ ${job.date_to}`}</td><td>{job.status === 'succeeded' && qualityWarnings(job).length ? 'Готово с предупреждениями' : STATUS[job.status]}</td><td>{days.length || skipped.length ? `${summary?.completed_days ?? days.length} дн., пропущено ${summary?.skipped_days ?? skipped.length}` : job.error ?? '—'}</td></tr>
         })}</tbody></table></div>{!jobs.length && <p>Заданий пока нет.</p>}
           {detail && <div><h3>{KIND[detail.kind]} · {detail.id.slice(0, 8)}</h3>{detail.error && <p className="aggregation-message error">{detail.error}</p>}
             {detailSchema && <div className="aggregation-quality"><strong>Доступность столбцов на момент расчёта</strong><p>{detailSchema.available_metrics.map(metric => METRIC_LABELS[metric] ?? metric).join(', ') || 'Только число показаний'}</p>{(detailSchema.warnings ?? []).map(message => <p className="aggregation-message warning" key={message}>{message}</p>)}</div>}
             {detail.events.filter((event) => event.event === 'quality').slice(-5).map((event, index) => <QualityDetails key={`${event.date}-${index}`} event={event} />)}<details><summary>Подробный журнал</summary><pre>{JSON.stringify(detail.events, null, 2)}</pre></details></div>}
         </section>
+        {dayResults.some(result => result.outcome === 'skipped') && <section className="aggregation-card"><h2>Пропущенные дни активного профиля</h2>{dayResults.filter(result => result.outcome === 'skipped').map(result => <p key={result.day}>{result.day}: {result.reason}</p>)}</section>}
       </> : !error && <p role="status">Проверяем доступ…</p>}
     </main>
   )
@@ -225,8 +232,8 @@ function QualityDetails({ event }) {
     <span>{formatNumber(event.points, 0)} показаний · медиана интервала {formatNumber(event.median_seconds, 3)} с · дубликаты {event.duplicates}</span>
     {event.available_metrics && <p>Есть значения: {event.available_metrics.map(metric => METRIC_LABELS[metric] ?? metric).join(', ') || 'только число показаний'}.</p>}
     {event.unavailable_metrics?.length > 0 && <p>Нет корректных значений: {event.unavailable_metrics.map(metric => METRIC_LABELS[metric] ?? metric).join(', ')}. Они остаются NULL.</p>}
-    <p>Покрытие: {event.coverage_basis === 'readings' ? 'по числу исходных показаний (мощность недоступна)' : 'по корректным показаниям активной мощности'}.</p>
-    <div className="aggregation-coverage">{Object.entries(event.coverage).map(([name, coverage]) => <div key={name}><span>{name}</span><meter min="0" max="1" value={Math.min(coverage, 1)} /><span>{formatNumber(coverage * 100, 1)}%</span></div>)}</div>
+    <p>Расчёт по доступным измерениям; пропуски не заменяются нулями.</p>
+    {Object.entries(event.valid_counts ?? {}).map(([name, count]) => <p key={name}>{name}: корректных показаний мощности {count} из {event.point_counts?.[name] ?? 0}.</p>)}
     {(event.warnings ?? []).map(message => <p key={message} className="aggregation-message warning">{message}</p>)}
     {(event.errors ?? []).map(message => <p key={message} className="aggregation-message error">{message}</p>)}
   </div>

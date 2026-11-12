@@ -32,18 +32,20 @@ class MetricCountTests(unittest.TestCase):
                 connection.execute(sql.SQL('CREATE TABLE {} (LIKE {} INCLUDING ALL)').format(sql.SQL(destination), sql.SQL(source)))
                 for metric in metrics:
                     connection.execute(sql.SQL('ALTER TABLE {} DROP COLUMN {}').format(sql.SQL(destination), sql.Identifier(metric + '_count')))
+                connection.execute(sql.SQL('ALTER TABLE {} DROP COLUMN available_energy_kwh').format(sql.SQL(destination)))
                 connection.execute(sql.SQL("INSERT INTO {}(bucket_start,sensor_name,points_count,active_power_w_avg,energy_kwh) VALUES('2026-10-15','Meter A',24,2000,48)").format(sql.SQL(destination)))
         return settings
 
     def test_upgrade_is_additive_idempotent_and_does_not_guess_legacy_counts(self):
         settings = self.legacy_tables()
-        self.assertEqual(len(upgrade_aggregates(settings)), len(METRICS) + len(DAILY_METRICS))
+        self.assertEqual(len(upgrade_aggregates(settings)), len(METRICS) + len(DAILY_METRICS) + 2)
         self.assertEqual(upgrade_aggregates(settings), [])
         with psycopg.connect(settings.target_dsn, row_factory=dict_row) as connection:
             row = connection.execute('SELECT * FROM student_schema.review_upgrade_hourly').fetchone()
             self.assertEqual(row['energy_kwh'], 48)
             self.assertEqual(row['active_power_w_avg'], 2000)
             self.assertIsNone(row['active_power_w_avg_count'])
+            self.assertIsNone(row['available_energy_kwh'])
 
     def test_upgrade_failure_rolls_back_both_tables(self):
         settings = self.legacy_tables()

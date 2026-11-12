@@ -32,6 +32,14 @@ def upgrade_aggregates(settings: Settings):
                     connection.execute(sql.SQL('ALTER TABLE {} ADD COLUMN {} bigint CHECK ({} >= 0 AND {} <= points_count)').format(
                         sql.Identifier(*names), sql.Identifier(count), sql.Identifier(count), sql.Identifier(count)))
                     added.append(f'{table}.{count}')
+                column = 'available_energy_kwh'
+                if column in existing:
+                    if existing[column]['typname'] != 'numeric':
+                        raise RefreshError(f'{table}.{column}: expected numeric; upgrade rolled back')
+                else:
+                    connection.execute(sql.SQL('ALTER TABLE {} ADD COLUMN {} numeric').format(
+                        sql.Identifier(*names), sql.Identifier(column)))
+                    added.append(f'{table}.{column}')
     # NULL in legacy rows means unknown counts. Never backfill with points_count:
     # a separate, validated refresh from raw readings supplies exact counts.
     return added

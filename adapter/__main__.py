@@ -15,14 +15,15 @@ from .runner import RefreshError, refresh
 
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
-    if argv and argv[0] in ('serve', 'init-control', 'upgrade-aggregates'):
+    if argv and argv[0] in ('serve', 'init-control', 'upgrade-control', 'upgrade-aggregates'):
         try:
             if len(argv) != 1:
                 raise ValueError('Эта команда не принимает дополнительных аргументов')
-            if argv[0] == 'init-control':
+            if argv[0] in ('init-control', 'upgrade-control'):
                 from .store import Store
-                Store(os.environ.get('ENERGY_ADAPTER_CONTROL_DSN') or os.environ['ENERGY_AGG_TARGET_DSN']).install()
-                print('Служебная схема adapter_control установлена; агрегаты не изменялись')
+                store = Store(os.environ.get('ENERGY_ADAPTER_CONTROL_DSN') or os.environ['ENERGY_AGG_TARGET_DSN'])
+                store.install()
+                print(f'Служебная схема {store.schema} обновлена до версии 2; агрегаты не изменялись')
             elif argv[0] == 'upgrade-aggregates':
                 from .schema import upgrade_aggregates
                 target = os.environ['ENERGY_AGG_TARGET_DSN']
@@ -39,7 +40,7 @@ def main(argv=None):
             print('Не удалось запустить адаптер: проверьте переменные окружения, доступ к БД и init-control', file=sys.stderr)
             return 1
     parser = argparse.ArgumentParser(description="Refresh existing hourly/daily energy tables. Default: read-only dry-run.",
-                                     epilog='Service commands: python -m adapter init-control; python -m adapter upgrade-aggregates; python -m adapter serve')
+                                     epilog='Service commands: init-control; upgrade-control; upgrade-aggregates; serve')
     parser.add_argument("--from", dest="start", type=date.fromisoformat, help="First local date, inclusive")
     parser.add_argument("--to", dest="end", type=date.fromisoformat, help="Boundary date, exclusive; unfinished days are always excluded")
     parser.add_argument("--apply", action="store_true", help="Replace aggregate rows in the selected period; never writes to source")
@@ -52,10 +53,14 @@ def main(argv=None):
     energy = parser.add_mutually_exclusive_group()
     energy.add_argument("--sample-seconds", type=Decimal, help="Confirmed uniform measurement interval; energy estimate assumes watts")
     energy.add_argument("--no-energy", action="store_true", help="Explicitly store NULL energy until sampling/integration is defined")
-    parser.add_argument("--allow-empty", action="store_true", help="Allow empty source days to clear existing target aggregates")
+    parser.add_argument("--allow-empty", action="store_true", help="Deprecated compatibility flag; empty profiled days write NULL rows, never clear the expected meter list")
     parser.add_argument("--checkpoint", type=Path, default=Path("energy_aggregation/local.checkpoint.json"))
+    parser.add_argument('--initialize-checkpoint', action='store_true',
+                        help='Explicitly create a new v2 checkpoint after an explicit --from --apply; never overwrite')
     parser.add_argument('--profile', type=Path, help='Approved JSON source profile')
     args = parser.parse_args(argv)
+    if args.initialize_checkpoint and (not args.apply or args.start is None or args.checkpoint.exists()):
+        parser.error('--initialize-checkpoint requires --apply, --from and a new checkpoint path')
     if args.apply and args.sample_seconds is None and not args.no_energy and not args.profile:
         parser.error("--apply requires --sample-seconds or --no-energy; the interval is never guessed")
     source_dsn = os.environ.get("ENERGY_AGG_SOURCE_DSN")
@@ -83,9 +88,19 @@ def main(argv=None):
                             hourly_table=args.hourly_table, daily_table=args.daily_table,
                             timezone=args.timezone, lookback_days=args.lookback_days,
                             statement_timeout_seconds=args.statement_timeout, sample_seconds=args.sample_seconds, profile=profile)
-        refresh(settings, start=args.start, end=args.end, apply=args.apply, checkpoint_path=args.checkpoint,
+        events = refresh(settings, start=args.start, end=args.end, apply=args.apply, checkpoint_path=args.checkpoint,
                 allow_empty=args.allow_empty, allowed_sensors=allowed,
                 emit=lambda event: print(json.dumps(event, ensure_ascii=False, default=str), flush=True))
+        if args.initialize_checkpoint:
+            from datetime import timedelta
+            from .runner import save_checkpoint, fingerprint
+            from .model import midnight
+            outcomes = [e for e in events if e['event'] in ('day', 'day_skipped')]
+            if not outcomes:
+                raise RefreshError('No completed days to initialize checkpoint')
+            end_day = max(date.fromisoformat(e['date']) for e in outcomes) + timedelta(days=1)
+            skipped = [e['date'] for e in outcomes if e['event'] == 'day_skipped']
+            save_checkpoint(args.checkpoint, fingerprint(settings), midnight(end_day, settings.timezone), skipped)
     except (RefreshError, ValueError, OSError, ZoneInfoNotFoundError) as exc:
         print(f"Refresh stopped: {exc}", file=sys.stderr)
         return 1

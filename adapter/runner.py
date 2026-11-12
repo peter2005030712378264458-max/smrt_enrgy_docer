@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 import hashlib
 import json
@@ -13,7 +13,7 @@ import psycopg
 from psycopg.conninfo import conninfo_to_dict
 from psycopg.rows import dict_row
 
-from .model import DAILY_COLUMNS, HOURLY_COLUMNS, METRICS, Settings, build_rows, day_windows, plan_window, table_parts
+from .model import DAILY_COLUMNS, HOURLY_COLUMNS, METRICS, Settings, build_rows, fill_missing_hours, day_windows, plan_window, table_parts
 from .queries import SOURCE_COLUMNS, hourly_query, insert_query, window_query
 from .mapping import column_types, source_capabilities, source_cte
 from psycopg import sql
@@ -27,35 +27,48 @@ class RefreshInterrupted(RefreshError):
     pass
 
 
+class DayQualityError(RefreshError):
+    """A local data problem; no replacement is committed for this day."""
+
+
 def fingerprint(settings):
     def public_connection(dsn):
         values = conninfo_to_dict(dsn)
         return {key: values.get(key) for key in ("host", "hostaddr", "port", "dbname", "user", "service")}
-    value = {"version": 2, "source": public_connection(settings.source_dsn),
+    value = {"version": 3, "source": public_connection(settings.source_dsn),
              "target": public_connection(settings.target_dsn), "tables": [settings.source_table, settings.hourly_table, settings.daily_table],
              "timezone": settings.timezone, "sample_seconds": str(settings.sample_seconds), "profile": settings.profile}
     return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
+
+
+def directory_signature(sensors):
+    return hashlib.sha256(json.dumps(sorted(sensors), ensure_ascii=False).encode()).hexdigest()
 
 
 def read_checkpoint(path, expected_fingerprint):
     if not path.exists():
         return None
     value = json.loads(path.read_text(encoding="utf-8"))
-    if value.get("version") != 1 or value.get("fingerprint") != expected_fingerprint:
+    if value.get("version") != 2 or value.get("fingerprint") != expected_fingerprint:
         raise RefreshError("Checkpoint belongs to different connections, tables, timezone or energy settings")
-    result = datetime.fromisoformat(value["processed_until"])
+    result = datetime.fromisoformat(value["attempted_until"])
     if result.tzinfo is None:
         raise RefreshError("Checkpoint must contain a timezone")
     return result
 
 
-def save_checkpoint(path, signature, watermark):
+def save_checkpoint(path, signature, watermark, skipped_dates=()):
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = None
     try:
         with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent, delete=False) as stream:
             temporary = Path(stream.name)
-            json.dump({"version": 1, "fingerprint": signature, "processed_until": watermark.isoformat()}, stream)
+            processed = min([watermark, *(datetime.fromisoformat(d).replace(tzinfo=watermark.tzinfo)
+                                         for d in skipped_dates)])
+            json.dump({"version": 2, "fingerprint": signature,
+                       "processed_until": processed.isoformat(),
+                       'attempted_until': watermark.isoformat(),
+                       'skipped_dates': sorted(skipped_dates)}, stream)
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temporary, path)
@@ -139,17 +152,17 @@ def quality_report(source, normalized, settings, begin, finish, stats, target, a
     warnings = []
     if rows['invalid_names']:
         failures.append('Есть показания без идентификатора счётчика')
-    if rows['points'] and rows['duplicates'] / rows['points'] > profile['quality']['max_duplicate_fraction']:
-        failures.append('Слишком много дубликатов времени')
-    if rows['intervals'] and rows['matched'] / rows['intervals'] < profile['quality']['min_interval_match']:
-        failures.append('Интервалы показаний не соответствуют профилю')
+    if rows['duplicates']:
+        warnings.append('Повторения времени объединены до расчёта; повторный учёт исключён')
+    if rows['matched'] < rows['intervals']:
+        warnings.append('Неравномерные интервалы: энергия ограничена известной длительностью измерений')
     expected = Decimal(str((finish.timestamp()-begin.timestamp()))) / sample
     counts = {}
     for row in stats:
         name = row['sensor_name']
         counts[name] = counts.get(name, 0) + row['active_power_w_avg_count']
     if not counts:
-        failures.append('Нет исходных показаний: день не отмечен обработанным')
+        warnings.append('Нет исходных показаний: ожидаемые счётчики будут записаны с NULL')
     point_counts = {}
     for row in stats:
         point_counts[row['sensor_name']] = point_counts.get(row['sensor_name'], 0) + row['points_count']
@@ -161,13 +174,13 @@ def quality_report(source, normalized, settings, begin, finish, stats, target, a
                         + ', '.join(missing_power)
                         + '. Полное потребление по всем счётчикам определить нельзя.')
     insufficient_power = sorted(name for name, value in coverage.items()
-                                if coverage_counts[name] > 0 and value < profile['quality']['min_coverage'])
+                                if coverage_counts[name] > 0 and value < 1)
     if insufficient_power:
-        failures.append(('Неполный день или недостаточно корректных показаний мощности: ' if power_available
+        warnings.append(('Неполный день или недостаточно корректных показаний мощности: ' if power_available
                          else 'Неполный день или недостаточно исходных показаний: ')
                         + ', '.join(insufficient_power))
     if power_available and counts and not any(counts.values()):
-        failures.append('Нет корректной активной мощности ни у одного счётчика')
+        warnings.append('Нет корректной активной мощности: сохраняются NULL и остальные доступные показатели')
     if allowed_sensors is not None and set(counts) - set(allowed_sensors):
         failures.append('Имена счётчиков отсутствуют в справочнике приложения')
     previous = target.execute(sql.SQL('''SELECT sensor_name, SUM(points_count) AS points
@@ -178,10 +191,11 @@ def quality_report(source, normalized, settings, begin, finish, stats, target, a
         previous = target.execute(sql.SQL('''SELECT sensor_name, SUM(points_count) AS points
             FROM {} WHERE bucket_start >= %s AND bucket_start < %s GROUP BY sensor_name''').format(
                 sql.Identifier(*table_parts(settings.hourly_table))), (begin-timedelta(days=1), begin)).fetchall()
-    if any(point_counts.get(r['sensor_name'], 0) < float(r['points']) * profile['quality']['min_existing_points_ratio'] for r in previous):
-        failures.append('Исчезли счётчики или существенно уменьшилось число показаний')
+    if any(point_counts.get(r['sensor_name'], 0) < r['points'] for r in previous):
+        warnings.append('Часть ожидаемых показаний отсутствует; прежние значения будут заменены, в том числе на NULL')
     available_metrics = [metric for metric in METRICS if any(row[metric + '_count'] for row in stats)]
-    return {**dict(rows), 'coverage': coverage, 'missing_power_sensors': missing_power,
+    return {**dict(rows), 'coverage': coverage, 'valid_counts': counts, 'point_counts': point_counts,
+            'missing_power_sensors': missing_power,
             'coverage_basis': 'active_power' if power_available else 'readings',
             'available_metrics': available_metrics,
             'unavailable_metrics': [metric for metric in METRICS if metric not in available_metrics],
@@ -195,11 +209,7 @@ def validate_required_rows(source, profile, normalized, begin, finish):
         sql.Identifier(*table_parts(profile['source_table'])), sql.Identifier(profile['columns']['ts']))).fetchone()
     if missing_time:
         raise RefreshError('В источнике есть строки без времени (NULL). Их нельзя отнести к суткам. Исправьте время или выберите подготовленное представление; прежние агрегаты сохранены.')
-    invalid_names = source.execute(sql.SQL('''WITH readings AS ({})
-        SELECT 1 FROM readings WHERE sensor_name IS NULL OR BTRIM(sensor_name)='' LIMIT 1''').format(
-            normalized), {'start': begin, 'end': finish}).fetchone()
-    if invalid_names:
-        raise RefreshError('В выбранном периоде есть строки без идентификатора счётчика. Прежние агрегаты сохранены.')
+
 
 
 def refresh(settings: Settings, *, start: date | None = None, end: date | None = None,
@@ -208,6 +218,8 @@ def refresh(settings: Settings, *, start: date | None = None, end: date | None =
             expected_schema_signature=None):
     """No DDL, scheduler installation or writes to the source. Dry-run is the default."""
     checkpoint_path = Path(checkpoint_path)
+    if settings.profile and not allowed_sensors:
+        raise RefreshError('Нужен непустой полный справочник ожидаемых счётчиков')
     signature = fingerprint(settings)
     now = now or datetime.now(timezone.utc)
     events = []
@@ -215,7 +227,10 @@ def refresh(settings: Settings, *, start: date | None = None, end: date | None =
     def report(event):
         events.append(event)
         if emit:
-            emit(event)
+            try:
+                emit(event)
+            except (psycopg.DataError, psycopg.IntegrityError, psycopg.errors.QueryCanceled) as exc:
+                raise RefreshError('Не удалось сохранить журнал или прогресс; повторите задание после проверки служебной БД') from exc
 
     # Checkpoint must be reread after acquiring the target lock.
     with psycopg.connect(settings.source_dsn, autocommit=True, row_factory=dict_row, connect_timeout=8) as source, \
@@ -249,62 +264,90 @@ def refresh(settings: Settings, *, start: date | None = None, end: date | None =
             begin, finish = plan_window(settings, now, start, end, watermark, apply)
             report({"event": "plan", "mode": "apply" if apply else "dry-run", "from": begin.isoformat(),
                     "to_exclusive": finish.isoformat(), "timezone": settings.timezone,
+                    'algorithm_version': 3,
                     "energy": "fixed-interval estimate" if settings.sample_seconds is not None else "not calculated"})
-            report({'event': 'schema', **capabilities})
+            report({'event': 'schema', **capabilities,
+                    'directory_signature': directory_signature(allowed_sensors) if allowed_sensors is not None else None})
             if end is None or finish.date() < end:
                 report({'event': 'notice', 'detail': 'Сегодняшние и будущие незавершённые сутки исключены',
                         'to_exclusive': finish.isoformat()})
             if begin < finish:
                 validate_required_rows(source, source_profile, normalized, begin, finish)
+            completed = skipped = 0
+            skipped_dates = set()
+            if automatic and checkpoint_path.exists():
+                skipped_dates.update(json.loads(checkpoint_path.read_text(encoding='utf-8')).get('skipped_dates', []))
             for day_start, day_end in day_windows(begin, finish, settings.timezone):
                 if stop_requested and stop_requested():
                     raise RefreshInterrupted('Остановка на границе суток; задание будет возобновлено')
-                with source.transaction():
-                    source.execute('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ')
-                    stats = source.execute(hourly_query(settings.source_table, normalized),
-                                           {"start": day_start, "end": day_end, "timezone": settings.timezone}).fetchall()
-                    if settings.profile:
-                        mapping = settings.profile.get('sensor_map', {})
-                        raw_names = {row['sensor_name'] for row in stats}
-                        if len({mapping.get(name, name) for name in raw_names}) != len(raw_names):
-                            raise RefreshError('Преобразование имён объединило разные счётчики')
-                        for row in stats:
-                            row['sensor_name'] = mapping.get(row['sensor_name'], row['sensor_name'])
-                        if len({(r['bucket_start'], r['sensor_name']) for r in stats}) != len(stats):
-                            raise RefreshError('Преобразование имён объединило разные счётчики')
-                        quality = quality_report(source, normalized, settings, day_start, day_end, stats, target, allowed_sensors,
-                                                 power_available='active_power_w_avg' in capabilities['available_metrics'])
-                        report({'event': 'quality', 'date': day_start.date().isoformat(), **quality})
-                        if apply and quality['errors']:
-                            raise RefreshError('; '.join(quality['errors']))
-                hourly, daily = build_rows(stats, settings)
-                day = day_start.date()
-                next_day = day.fromordinal(day.toordinal() + 1)
-                if not hourly and not allow_empty:
-                    existing_hours = target.execute(window_query(settings.hourly_table, exists=True), (day_start, day_end)).fetchone()["exists"]
-                    existing_days = target.execute(window_query(settings.daily_table, exists=True), (day, next_day)).fetchone()["exists"]
-                    if existing_hours or existing_days:
-                        raise RefreshError(f"{day}: source is empty but target has data; inspect the source or explicitly use --allow-empty")
-                if apply and not hourly and not allow_empty:
-                    raise RefreshError(f'{day}: empty source; checkpoint was not advanced')
-                if apply:
-                    # Readers see either the previous complete pair or the refreshed pair.
-                    with target.transaction():
-                        target.execute("SET LOCAL lock_timeout='5s'")
-                        target.execute(window_query(settings.hourly_table), (day_start, day_end))
-                        target.execute(window_query(settings.daily_table), (day, next_day))
-                        with target.cursor() as cursor:
-                            if hourly:
+                try:
+                    with source.transaction():
+                        source.execute('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ')
+                        if not settings.profile:
+                            invalid = source.execute(sql.SQL('''WITH readings AS ({}) SELECT 1 FROM readings
+                                WHERE sensor_name IS NULL OR BTRIM(sensor_name)='' LIMIT 1''').format(normalized),
+                                {'start':day_start,'end':day_end}).fetchone()
+                            if invalid:
+                                raise DayQualityError('В выбранном дне есть строки без идентификатора счётчика')
+                        read_start = day_start - timedelta(seconds=float(settings.sample_seconds or 0))
+                        stats = source.execute(hourly_query(settings.source_table, normalized,
+                            sample_seconds=settings.sample_seconds,
+                            window_seconds=(settings.profile or {}).get('window_seconds', 10)),
+                            {'start': read_start, 'end': day_end, 'timezone': settings.timezone}).fetchall()
+                        # Carry the confirmed interval across midnight without
+                        # importing the preceding day's measurement counts/means.
+                        stats = [row for row in stats if day_start <= row['bucket_start'] < day_end]
+                        if settings.profile:
+                            mapping = settings.profile.get('sensor_map', {})
+                            raw_names = {r['sensor_name'] for r in stats}
+                            if len({mapping.get(n, n) for n in raw_names}) != len(raw_names):
+                                raise DayQualityError('Sensor mappings merge distinct source meters')
+                            for row in stats:
+                                row['sensor_name'] = mapping.get(row['sensor_name'], row['sensor_name'])
+                            quality = quality_report(source, normalized, settings, day_start, day_end,
+                                stats, target, allowed_sensors,
+                                power_available='active_power_w_avg' in capabilities['available_metrics'])
+                            report({'event': 'quality', 'date': day_start.date().isoformat(), **quality})
+                            if quality['errors']:
+                                raise DayQualityError('; '.join(quality['errors']))
+                    sensors = allowed_sensors if allowed_sensors is not None else {r['sensor_name'] for r in stats}
+                    if not sensors:
+                        raise DayQualityError('Expected meter list is empty; existing aggregates preserved')
+                    stats = fill_missing_hours(stats, sensors, day_start, day_end)
+                    hourly, daily = build_rows(stats, settings)
+                    day = day_start.date()
+                    if apply:
+                        with target.transaction():
+                            target.execute("SET LOCAL lock_timeout='5s'")
+                            target.execute(window_query(settings.hourly_table), (day_start, day_end))
+                            target.execute(window_query(settings.daily_table), (day, day+timedelta(days=1)))
+                            with target.cursor() as cursor:
                                 cursor.executemany(insert_query(settings.hourly_table, HOURLY_COLUMNS),
-                                                   [tuple(row[c] for c in HOURLY_COLUMNS) for row in hourly])
-                            if daily:
+                                    [tuple(row[c] for c in HOURLY_COLUMNS) for row in hourly])
                                 cursor.executemany(insert_query(settings.daily_table, DAILY_COLUMNS),
-                                                   [tuple(row[c] for c in DAILY_COLUMNS) for row in daily])
+                                    [tuple(row[c] for c in DAILY_COLUMNS) for row in daily])
+                    skipped_dates.discard(day.isoformat())
+                    warnings = []
+                    incomplete = sum(r['energy_kwh'] is None for r in daily)
+                    if incomplete:
+                        warnings.append(f'Полная энергия неизвестна у {incomplete} счётчиков; энергия по доступным измерениям сохранена отдельно')
+                    report({'event': 'day', 'date': day.isoformat(), 'hourly_rows': len(hourly),
+                        'daily_rows': len(daily), 'source_points': sum(r['points_count'] for r in hourly),
+                        'partial_day': False, 'warnings': warnings, 'written': apply})
+                    completed += 1
+                except (DayQualityError, psycopg.DataError, psycopg.IntegrityError, psycopg.errors.QueryCanceled) as exc:
+                    day = day_start.date()
+                    skipped_dates.add(day.isoformat())
+                    reason = str(exc) if isinstance(exc, DayQualityError) else f'Ошибка записи дня (SQLSTATE {exc.sqlstate}); прежние агрегаты сохранены'
+                    report({'event': 'day_skipped', 'date': day.isoformat(), 'reason': reason,
+                            'warnings': [reason], 'written': False})
+                    skipped += 1
+                if apply and automatic:
                     watermark = max(watermark, day_end) if watermark else day_end
-                    if automatic:
-                        save_checkpoint(checkpoint_path, signature, watermark)
-                report({"event": "day", "date": day.isoformat(), "hourly_rows": len(hourly),
-                        "daily_rows": len(daily), "source_points": sum(row["points_count"] for row in hourly),
-                        "partial_day": day_end.hour != 0 or day_end.minute != 0 or day_end.second != 0 or day_end.microsecond != 0,
-                        "written": apply})
+                    save_checkpoint(checkpoint_path, signature, watermark, skipped_dates)
+            report({'event': 'summary', 'completed_days': completed, 'skipped_days': skipped,
+                    'warnings': ['Некоторые дни пропущены; причины сохранены в результатах дней'] if skipped else []})
+            if skipped and not completed:
+                raise RefreshError('Не удалось обработать ни одного дня: ' + '; '.join(
+                    e['reason'] for e in events if e['event'] == 'day_skipped'))
     return events

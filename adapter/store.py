@@ -34,6 +34,16 @@ CREATE TABLE IF NOT EXISTS adapter_control.settings (
 INSERT INTO adapter_control.settings(id) VALUES(1) ON CONFLICT DO NOTHING;
 ALTER TABLE adapter_control.settings ADD COLUMN IF NOT EXISTS schema_version integer NOT NULL DEFAULT 1;
 ALTER TABLE adapter_control.profiles ADD COLUMN IF NOT EXISTS signature text;
+ALTER TABLE adapter_control.profiles ADD COLUMN IF NOT EXISTS attempted_until date;
+CREATE TABLE IF NOT EXISTS adapter_control.day_results (
+ profile_id text NOT NULL REFERENCES adapter_control.profiles(id), day date NOT NULL,
+ outcome text NOT NULL CHECK(outcome IN ('written','skipped')),
+ job_id text NOT NULL REFERENCES adapter_control.jobs(id),
+ hourly_rows integer NOT NULL DEFAULT 0, daily_rows integer NOT NULL DEFAULT 0,
+ reason text, recorded_at timestamptz NOT NULL DEFAULT now(),
+ PRIMARY KEY(profile_id,day)
+);
+UPDATE adapter_control.settings SET schema_version=2 WHERE id=1 AND schema_version=1;
 '''
 
 
@@ -59,7 +69,43 @@ class Store:
 
     def install(self):
         with self.connection() as conn:
+            version = conn.execute('SELECT to_regclass(%s) AS relation', (self.schema+'.settings',)).fetchone()
+            if version['relation']:
+                current = conn.execute('SELECT schema_version FROM settings WHERE id=1').fetchone()
+                if current and current['schema_version'] not in (1, 2):
+                    raise ValueError('Unsupported control schema version')
             conn.execute(DDL.replace('adapter_control', self.schema))
+
+    def record_day(self, profile_id, job_id, event, scheduled=False):
+        from datetime import date, timedelta
+        day = date.fromisoformat(event['date'])
+        outcome = 'written' if event['event'] == 'day' else 'skipped'
+        with self.connection() as conn:
+            profile = conn.execute('SELECT * FROM profiles WHERE id=%s FOR UPDATE', (profile_id,)).fetchone()
+            conn.execute('''INSERT INTO day_results(profile_id,day,outcome,job_id,hourly_rows,daily_rows,reason)
+                VALUES(%s,%s,%s,%s,%s,%s,%s) ON CONFLICT(profile_id,day) DO UPDATE SET
+                outcome=EXCLUDED.outcome,job_id=EXCLUDED.job_id,hourly_rows=EXCLUDED.hourly_rows,
+                daily_rows=EXCLUDED.daily_rows,reason=EXCLUDED.reason,recorded_at=now()''',
+                (profile_id, day, outcome, job_id, event.get('hourly_rows', 0),
+                 event.get('daily_rows', 0), event.get('reason')))
+            attempted = profile['attempted_until'] or profile['processed_until']
+            processed = profile['processed_until']
+            if scheduled:
+                attempted = attempted or day
+                processed = processed or day
+                if attempted == day:
+                    attempted = day + timedelta(days=1)
+            # A manual repair can close an old gap, but does not initialize or
+            # move the automatic scanning boundary.
+            if processed is not None and attempted is not None:
+                while processed < attempted:
+                    result = conn.execute('SELECT outcome FROM day_results WHERE profile_id=%s AND day=%s',
+                                          (profile_id, processed)).fetchone()
+                    if not result or result['outcome'] != 'written':
+                        break
+                    processed += timedelta(days=1)
+            conn.execute('UPDATE profiles SET processed_until=%s,attempted_until=%s WHERE id=%s',
+                         (processed, attempted, profile_id))
 
     def profile(self, profile_id):
         row = self.query('SELECT * FROM profiles WHERE id=%s', (profile_id,), one=True)

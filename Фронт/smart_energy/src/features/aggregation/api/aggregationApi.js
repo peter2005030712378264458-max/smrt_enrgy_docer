@@ -5,7 +5,8 @@ import { buildApiUrl } from '../../../shared/api/config.js'
 export async function aggregationRequest(path, payload, retry = true) {
   const headers = { Authorization: `Bearer ${getAccessToken() ?? ''}` }
   if (payload !== undefined) headers['Content-Type'] = 'application/json'
-  const response = await fetch(buildApiUrl(`/aggregation/${path}/`), {
+  const [operation, query] = path.split('?', 2)
+  const response = await fetch(buildApiUrl(`/aggregation/${operation}/${query ? `?${query}` : ''}`), {
     method: payload === undefined ? 'GET' : 'POST',
     headers,
     credentials: 'include',

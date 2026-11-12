@@ -1,4 +1,5 @@
 import { useOutletContext } from 'react-router'
+import DeviceAvailabilityPanel from './DeviceAvailabilityPanel.jsx'
 import PowerTrendChart from '../../components/charts/PowerTrendChart.jsx'
 import RoomConsumptionChart from '../../components/charts/RoomConsumptionChart.jsx'
 import WeekdayConsumptionHeatmap from '../../components/charts/WeekdayConsumptionHeatmap.jsx'
@@ -44,6 +45,8 @@ export default function DashboardOverviewPage() {
   const powerScopeLabel = coverage.isPartial && coverage.totalMeters !== null
     ? `Учтено счётчиков: ${availableMetersLabel} из ${formatNumber(coverage.totalMeters, 0)}`
     : selectedDeviceLabel
+  const partialEnergy = summary?.total_energy_kwh == null && summary?.available_energy_kwh != null
+  const displayedEnergy = summary?.total_energy_kwh ?? summary?.available_energy_kwh
 
   return (
     <section className="energy-view active">
@@ -112,10 +115,10 @@ export default function DashboardOverviewPage() {
           <div className="energy-kpi-card__meta">{powerScopeLabel}</div>
         </article>
         <article className="energy-kpi-card">
-          <div className="energy-kpi-card__label">Энергия за период</div>
-          <div className="energy-kpi-card__value">{formatNumber(summary?.total_energy_kwh, 0)} <span>кВт·ч</span></div>
-          <div className="energy-kpi-card__meta">{summary?.points > 0 && summary?.total_energy_kwh == null
-            ? 'Недостаточно данных для полной энергии за период'
+          <div className="energy-kpi-card__label">{partialEnergy ? 'Энергия по доступным данным' : 'Энергия за период'}</div>
+          <div className="energy-kpi-card__value">{formatNumber(displayedEnergy, 2)} <span>кВт·ч</span></div>
+          <div className="energy-kpi-card__meta">{summary?.total_energy_kwh == null
+            ? 'Полное потребление неизвестно: часть измерений отсутствует'
             : `${formatDateTime(summary?.date_from)} - ${formatDateTime(summary?.date_to)}`}</div>
         </article>
         <article className="energy-kpi-card accent-warning">
@@ -126,9 +129,11 @@ export default function DashboardOverviewPage() {
         <article className="energy-kpi-card accent-danger">
           <div className="energy-kpi-card__label">Счетчики в выборке</div>
           <div className="energy-kpi-card__value">{formatNumber(summary?.devices_count, 0)} <span>шт.</span></div>
-          <div className="energy-kpi-card__meta">Точек периода: {formatNumber(powerStats.pointsCount, 0)}</div>
+          <div className="energy-kpi-card__meta">Позиций периода: {formatNumber(powerStats.pointsCount, 0)} · с мощностью: {formatNumber(powerStats.knownPointsCount, 0)}</div>
         </article>
       </section>
+
+      <DeviceAvailabilityPanel />
 
       <section className="energy-content-grid energy-content-grid--main">
         <article className="energy-panel energy-chart-panel">

@@ -117,6 +117,13 @@ class ConnectionIntegrationTests(unittest.TestCase):
                     stores[0].enqueue(profile['id'], 'inspect')
                     self.assertIsNone(stores[1].claim())
                     self.assertEqual(stores[0].claim()['profile_id'], 'profile')
+                    with stores[0].connection() as first, stores[1].connection() as second:
+                        lock = 'SELECT pg_try_advisory_lock(hashtextextended(%s,482019771)) AS acquired'
+                        self.assertTrue(first.execute(lock, (schemas[0],)).fetchone()['acquired'])
+                        self.assertTrue(second.execute(lock, (schemas[1],)).fetchone()['acquired'])
+                        self.assertFalse(second.execute(lock, (schemas[0],)).fetchone()['acquired'])
+                    self.assertEqual(Controller(stores[0], {}).dispatch('GET', '/health', {}),
+                                     {'status':'ok', 'algorithm_version':3, 'control_schema':schemas[0]})
                 finally:
                     with psycopg.connect(admin, autocommit=True) as conn:
                         conn.execute('DROP TABLE public.connection_test_readings')
